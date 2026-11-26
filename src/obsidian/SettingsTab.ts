@@ -3,6 +3,8 @@
 
 import { type App, Notice, type Plugin, PluginSettingTab, SecretComponent, Setting } from 'obsidian';
 import { confirm } from './ConfirmModal';
+import { renderPresetSettings } from './PresetSettings';
+import type { PresetLibrary } from '../core/presets/library';
 import {
   type AttachmentMode,
   type DisplayMode,
@@ -31,6 +33,7 @@ export interface SettingsHost extends Plugin {
   contextSettingsChanged(): void;
   /** Delete all AI edit history. */
   clearEditHistory(): Promise<void>;
+  presets: PresetLibrary;
 }
 
 const DISPLAY_LABELS: Record<DisplayMode, string> = {
@@ -311,6 +314,22 @@ export class LektorSettingTab extends PluginSettingTab {
             });
           }),
       );
+
+    // Presets
+    renderPresetSettings(
+      this.app,
+      containerEl,
+      {
+        presets: this.host.presets,
+        folder: `${this.host.manifest.dir ?? '<plugin folder>'}/presets`,
+        hidden: () => this.host.settingsStore.settings.presets.hidden,
+        setHidden: async (ids) => {
+          await this.apply({ presets: { hidden: [...ids] } });
+          this.host.presets.refresh();
+        },
+      },
+      () => this.display(),
+    );
 
     // Privacy
     new Setting(containerEl).setName('Privacy').setHeading();

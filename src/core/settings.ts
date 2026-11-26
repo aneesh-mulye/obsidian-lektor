@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 
-export const SETTINGS_VERSION = 4;
+export const SETTINGS_VERSION = 5;
 
 /** The effective exclusion list while the stored one is unreadable. */
 export const EXCLUDE_EVERYTHING: readonly string[] = Object.freeze(['**']);
@@ -123,6 +123,13 @@ const SECTIONS = {
   privacy: z.strictObject({
     storeFullTranscripts: z.boolean(),
   }),
+  presets: z.strictObject({
+    /** Built-in presets the user hid (DESIGN.md § Presets). */
+    hidden: z
+      .array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/))
+      .max(50)
+      .refine((ids) => new Set(ids).size === ids.length, 'A preset is listed twice.'),
+  }),
 };
 
 const SECTION_NAMES = Object.keys(SECTIONS);
@@ -160,6 +167,7 @@ export const DEFAULT_SETTINGS: Settings = deepFreeze({
     secrets: { tavily: '', exa: '', brave: '' },
   },
   privacy: { storeFullTranscripts: false },
+  presets: { hidden: [] },
 });
 
 /**
@@ -197,6 +205,8 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
     }
     return out;
   },
+  // 4 → 5: presets (which built-ins are hidden: none).
+  4: (raw) => ({ ...raw, version: 5, ...(Object.hasOwn(raw, 'presets') ? {} : { presets: { hidden: [] } }) }),
 };
 
 /** A copy of `obj` with `key` added, if obj is an object lacking it; otherwise obj unchanged (salvage reports anything wrong). */
@@ -227,6 +237,7 @@ export interface SettingsPatch {
   readonly context?: Partial<Omit<Settings['context'], 'excludedFolders'>>;
   readonly tools?: Partial<Settings['tools']>;
   readonly privacy?: Partial<Settings['privacy']>;
+  readonly presets?: Partial<Settings['presets']>;
 }
 
 export class SettingsStore {

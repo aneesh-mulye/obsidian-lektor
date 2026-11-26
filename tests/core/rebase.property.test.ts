@@ -118,12 +118,31 @@ describe('rebase (INVARIANTS.md B1, B2, B4)', () => {
           if (p.edits.includes(e)) continue;
           expect(regions.some((region) => region.includes(e.find))).toBe(true);
         }
-        // Rebase again after more typing: at most one edit per hunk.
+        // Rebase again after more typing: once a rebase has rewritten the proposal, at most one edit per hunk.
         const again = rebase(more.reduce(applyUser, text), r.proposal);
-        expect(again.proposal.edits.length).toBeLessThanOrEqual(p.hunks.length);
-        expect(new Set(again.proposal.hunks.map((h) => h.edit)).size).toBe(again.proposal.edits.length);
+        if (again.proposal === p) {
+          // Never rewritten (the note was as the review left it): the model's own edits, as they were.
+          expect(again.proposal.edits).toBe(p.edits);
+        } else {
+          expect(again.proposal.edits.length).toBeLessThanOrEqual(p.hunks.length);
+          expect(new Set(again.proposal.hunks.map((h) => h.edit)).size).toBe(again.proposal.edits.length);
+        }
       }),
     );
+  });
+
+  // Regression (B1 seed 1504067721, a mistake in the test): a proposal whose model edits include a no-op ("the" → "the",
+  // which has no hunk) keeps both edits while the note is as the review left it. That is not edits piling up.
+  it('B1: an untouched proposal keeps the model’s edits, no-op ones included', () => {
+    const text = 'sat sat their its teh on. ';
+    const v = proposeEdit({ path: 'a.md', edits: [{ find: 'the', replace: 'the' }, { find: 'sat s', replace: '' }] }, { text, id: 'p', hunkId: id, createdAt: 0, model: MODEL });
+    if (!v.ok) throw new Error(v.error);
+    expect(v.proposal.edits).toHaveLength(2);
+    expect(v.proposal.hunks).toHaveLength(1);
+    expect(rebase(text, v.proposal).proposal).toBe(v.proposal);
+    // After typing, the rebased proposal keeps one edit per hunk.
+    const typed = rebase(`Now ${text}`, v.proposal).proposal;
+    expect(typed.edits).toHaveLength(1);
   });
 
   it('B1: with no user edits, a rebase drops nothing and changes nothing', () => {
@@ -217,12 +236,34 @@ describe('rebase (INVARIANTS.md B1, B2, B4)', () => {
           const untouchedBefore = old.to <= pre && !(old.from === old.to && old.from === pre && oldEnd > pre);
           const untouchedAfter = old.from >= oldEnd;
           const now = locateHunk(text, r.proposal, h.id);
-          if (untouchedBefore) expect(now?.from).toBe(old.from);
+          // An insertion left with none of the model's text beside it can't be anchored, and is dropped for that reason only.
+          const unanchored = r.dropped.find((d) => d.hunkId === h.id && d.reason === 'nothing is left to anchor it on');
+          if (unanchored) expect(beforeOf(p, h)).toBe('');
+          else if (untouchedBefore) expect(now?.from).toBe(old.from);
           else if (untouchedAfter) expect(now?.from).toBe(old.from + text.length - before.length);
           else expect(r.dropped.map((d) => d.hunkId)).toContain(h.id);
         }
       }),
     );
+  });
+
+  // Regression (B1 seed -1905239307, CI run): an insertion at the very end of the note, after the user deleted the
+  // eight characters before it. It was "kept" with no text to anchor on, so it could never be placed or applied.
+  // It is now dropped, saying why.
+  it('an insertion left with none of the model’s text beside it is dropped, not kept unplaceable', () => {
+    const before = 'keeper mat. the the ';
+    const v = proposeEdit({ path: 'a.md', edits: [{ find: 'the ', replace: 'the the' }] }, { text: 'keeper mat. the ', id: 'p', hunkId: id, createdAt: 0, model: MODEL });
+    if (!v.ok) throw new Error(v.error);
+    // The proposal, as if the review had left the note as `before` with its insertion at the very end.
+    const p: EditProposal = { ...v.proposal, anchors: [before.length - 4], expect: rebaseExpect(before) };
+    expect(locateHunk(before, p, p.hunks[0]!.id)).toEqual({ from: before.length, to: before.length, insert: 'the' });
+    // Deleting "the the " would leave the space before it (the model's own text, so it would be kept);
+    // deleting " the the " leaves none.
+    expect(rebase(before.slice(0, before.length - 8), p, before).kept).toEqual([p.hunks[0]!.id]);
+    const text = before.slice(0, before.length - 9);
+    const r = rebase(text, p, before);
+    expect(r.kept).toEqual([]);
+    expect(r.dropped).toEqual([{ hunkId: p.hunks[0]!.id, reason: 'nothing is left to anchor it on' }]);
   });
 
   it('without the previous text, a passage that now appears twice is dropped, never guessed', () => {
@@ -312,6 +353,15 @@ describe('automatic rebase (INVARIANTS.md B3)', () => {
         });
         fc.pre(pending.length > 0 && moved.every((m) => m.at !== null));
         const now = host.chat.proposals!.p as EditProposal;
+        // The one exception: an insertion left with none of the model's text beside it (it would be dropped, so the
+        // manager leaves the proposal as it was and reports it stale).
+        const unanchored = rebase(text, p, before).dropped.filter((d) => d.reason === 'nothing is left to anchor it on');
+        if (unanchored.length > 0) {
+          for (const d of unanchored) expect(beforeOf(p, p.hunks.find((h) => h.id === d.hunkId)!)).toBe('');
+          expect(now).toBe(p);
+          expect(manager.stale.has('p')).toBe(true);
+          return;
+        }
         expect(manager.stale.has('p')).toBe(false);
         for (const m of moved) expect(locateHunk(text, now, m.h.id)?.from).toBe(m.at);
       }),

@@ -174,6 +174,11 @@ export function rebase(text: string, p: EditProposal, previous?: string): Rebase
     const trail = Math.min(CONTEXT, c.trail, Math.floor((nextAt - end) / 2));
     const from = c.at - lead;
     const find = text.slice(from, end + trail);
+    // An insertion with none of the model's text left beside it has nothing to anchor on (locateHunk never places one).
+    if (find === '') {
+      dropped.push({ hunkId: c.h.id, reason: 'nothing is left to anchor it on' });
+      return;
+    }
     const reason = p.edits[c.h.edit]!.reason;
     edits.push({ find, replace: text.slice(from, c.at) + c.h.after + text.slice(end, end + trail), ...(reason ? { reason } : {}) });
     anchors.push(from);
@@ -202,5 +207,5 @@ export function rebase(text: string, p: EditProposal, previous?: string): Rebase
     settled,
     expect: fingerprint(text),
   };
-  return { proposal, kept: kept.map((c) => c.h.id), dropped };
+  return { proposal, kept: kept.filter((c) => moved.has(c.h.id)).map((c) => c.h.id), dropped };
 }

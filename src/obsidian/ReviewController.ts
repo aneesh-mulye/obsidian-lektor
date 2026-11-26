@@ -11,14 +11,15 @@
  * writes atomically.
  *
  * It also draws inline review in the editor (DESIGN.md § Inline review): marks,
- * ✓ / ✕ and the pill, all CodeMirror decorations that never change the text.
+ * ✓ / ✕ and the pill, and finding highlights with their hover cards, all
+ * CodeMirror decorations that never change the text.
  * It reads the open editor's text only to place those marks and to tell the
  * review manager when the note changed; that text goes nowhere else. Every
  * transaction it dispatches carries effects only, never changes (G8).
  */
 
 import { type Extension, StateEffect, StateField } from '@codemirror/state';
-import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType } from '@codemirror/view';
+import { Decoration, type DecorationSet, EditorView, ViewPlugin, type ViewUpdate, WidgetType, hoverTooltip } from '@codemirror/view';
 import { type App, type Editor, MarkdownView, type Plugin, editorInfoField, setIcon } from 'obsidian';
 import type { Mark } from '../core/review/rebase';
 import type { EditApplier, Splice } from '../core/review/types';
@@ -31,6 +32,25 @@ export interface InlineClicks {
   rejectAll(path: string): void;
   /** The amber dot: show the proposal's rebase panel. */
   showStale(path: string): void;
+  /** "Suggest fix" on a finding's hover card: ask the model for an edit to that passage. */
+  suggestFix(setId: string, findingId: string): void;
+  /** ✕ on a finding's hover card. */
+  dismissFinding(setId: string, findingId: string): void;
+}
+
+/** A finding as the editor shows it: where it is, and what its hover card says. */
+export interface InlineFinding {
+  setId: string;
+  findingId: string;
+  from: number;
+  to: number;
+  /** The colour family (spelling, garden, a verdict, other). */
+  tone: string;
+  kind: string;
+  verdict?: string;
+  explanation: string;
+  /** Sources; `link` only for URLs the chat knew. */
+  sources: ReadonlyArray<{ url: string; link: boolean }>;
 }
 
 export interface InlinePill {
@@ -42,6 +62,8 @@ export interface InlinePill {
 export interface InlineSource {
   /** Marks for this note's text (none unless the open chat is in Inline mode). */
   marks(path: string, text: string): readonly Mark[];
+  /** The open chat's open findings in this note, placed in its text (INVARIANTS.md F2). */
+  findings(path: string, text: string): readonly InlineFinding[];
   pill(path: string): InlinePill | null;
   /** A reason to show for a hunk (the model's), if any. */
   reason(proposalId: string, hunkId: string): string | undefined;
@@ -107,7 +129,11 @@ export class ReviewController implements EditApplier {
       const path = pathOf(view);
       if (path === null) return Decoration.none;
       const ranges = [];
-      for (const m of source.marks(path, view.state.doc.toString())) {
+      const text = view.state.doc.toString();
+      for (const f of source.findings(path, text)) {
+        if (f.from < f.to) ranges.push(Decoration.mark({ class: `lektor-finding is-${f.tone}` }).range(f.from, f.to));
+      }
+      for (const m of source.marks(path, text)) {
         if (m.from < m.to) ranges.push(Decoration.mark({ class: 'lektor-inline-del' }).range(m.from, m.to));
         ranges.push(Decoration.widget({ widget: new HunkWidget(m, source.reason(m.proposalId, m.hunkId), source.clicks), side: 1 }).range(m.to));
       }
@@ -185,7 +211,16 @@ export class ReviewController implements EditApplier {
       },
     );
 
-    const extension: Extension = [marks, plugin_];
+    // A finding's hover card: what it says, its sources, "Suggest fix" and dismiss.
+    const findingHover = hoverTooltip((view, pos) => {
+      const path = pathOf(view);
+      if (path === null) return null;
+      const f = source.findings(path, view.state.doc.toString()).find((x) => x.from <= pos && pos <= x.to);
+      if (!f) return null;
+      return { pos: f.from, end: f.to, above: true, create: () => ({ dom: findingCard(f, source.clicks) }) };
+    });
+
+    const extension: Extension = [marks, plugin_, findingHover];
     plugin.registerEditorExtension(extension);
     const unsubscribe = source.subscribe(() => {
       // Never inside another update: the source can change because of an editor transaction.
@@ -239,6 +274,28 @@ class HunkWidget extends WidgetType {
   override ignoreEvent(): boolean {
     return true;
   }
+}
+
+/** A finding's hover card in the editor. */
+function findingCard(f: InlineFinding, clicks: InlineClicks): HTMLElement {
+  const el = createDiv({ cls: `lektor-finding-card is-${f.tone}` });
+  const meta = el.createDiv({ cls: 'lektor-finding-meta' });
+  meta.createSpan({ cls: 'lektor-finding-kind', text: f.kind });
+  if (f.verdict) meta.createSpan({ cls: 'lektor-finding-verdict', text: f.verdict });
+  if (f.explanation) el.createDiv({ cls: 'lektor-finding-explanation', text: f.explanation });
+  if (f.sources.length > 0) {
+    const sources = el.createDiv({ cls: 'lektor-finding-sources' });
+    for (const s of f.sources) {
+      if (s.link) sources.createEl('a', { cls: 'external-link', text: s.url, href: s.url, attr: { target: '_blank', rel: 'noopener noreferrer' } });
+      else sources.createSpan({ cls: 'lektor-source-unknown', text: s.url, attr: { title: 'Not from this chat’s searches or pages, so it is not a link' } });
+    }
+  }
+  const actions = el.createDiv({ cls: 'lektor-finding-actions' });
+  const fix = actions.createEl('button', { text: 'Suggest fix', attr: { type: 'button' } });
+  fix.onclick = () => clicks.suggestFix(f.setId, f.findingId);
+  const dismiss = actions.createEl('button', { text: 'Dismiss', attr: { type: 'button' } });
+  dismiss.onclick = () => clicks.dismissFinding(f.setId, f.findingId);
+  return el;
 }
 
 /** "3 pending · Accept all · Reject all" and the staleness dot, at the top right of the editor. */

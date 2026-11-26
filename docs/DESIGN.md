@@ -277,7 +277,7 @@ Presets are Markdown files with YAML frontmatter, kept in a plugin folder inside
 | Clutter and leakage | Shows in search and graph; could be attached as context by accident | Invisible |
 | Reuse | Can `[[link]]` a style guide note into the prompt | No |
 
-**Decision: files, fenced off.** Presets live in `<vault>/.lektor/presets/*.md`. A dot-folder is hidden from Obsidian's file explorer, search, graph and link index, and `ContextBroker` hard-excludes it. The settings tab offers a form (name, icon, model, tools, display mode) plus a prompt editor, reading and writing those files; an "Open in editor" button opens the folder for anyone who wants raw editing. Invalid frontmatter shows an error on that preset and never breaks the others. If the dot-folder proves awkward, switching to a normal folder plus Obsidian's "Excluded files" setting is a one-line change.
+**Decision: files, fenced off.** Presets live in `<plugin folder>/presets/*.md` (decided before milestone 8; the doc first said `<vault>/.lektor/presets/`). A dot-folder is hidden from Obsidian's file explorer, search, graph and link index, and `ContextBroker` hard-excludes it. The settings tab offers a form (name, icon, model, tools, display mode) plus a prompt editor, reading and writing those files; an "Open in editor" button opens the folder for anyone who wants raw editing. Invalid frontmatter shows an error on that preset and never breaks the others. If the dot-folder proves awkward, switching to a normal folder plus Obsidian's "Excluded files" setting is a one-line change.
 
 **Preset frontmatter**
 
@@ -326,7 +326,7 @@ One right-sidebar view, three stacked zones, nothing else on screen by default.
 | Settings | `data.json` (plugin data) | Validated with zod; versioned schema with migrations |
 | API keys, search keys | Obsidian SecretStorage | Fall back to `data.json` only if SecretStorage is unavailable, with a warning |
 | Chat history | `<plugin dir>/chats/<id>.json` | Messages, context manifest (paths + hashes, not content), tool calls, proposal outcomes |
-| Presets | `<vault>/.lektor/presets/*.md` | See Presets |
+| Presets | `<plugin dir>/presets/*.md` | See Presets |
 | AI undo history | Plugin data, history/\<note-id>.jsonl (permanent) | Append-only; follows renames; cleared only on request |
 | CLI working folder | `<plugin dir>/void/` | Emptied before every CLI session; never inside the vault |
 | Codex home | `<plugin dir>/codex-home/` | Only a symlink to `~/.codex/auth.json` |
@@ -436,6 +436,11 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
   - Approved items are sent in the tool result for the rest of that reply and become chips for later messages. Chat history keeps only their paths (the manifest), as for all context. Denying, ticking nothing and "nothing matched" give the model the same answer.
   - Images go to Ollama in a user message's `images` field; text attachments are items in the context message.
   - `request_context` is offered to every model with native tool calling, in every display mode, whatever the globe says (the globe is for web tools). Models without tool calling don't get it.
+- *(2026-11-26, after milestone 7)* Obsidian's own undo and redo move review cards: when the note is back to exactly the text it had before an accept, the hunk is pending again; when it is back to the text right after, it is accepted again. The AI history logs these as "Undone in the note" and "Redone in the note".
+- *(2026-11-26, before milestone 8)* Presets.
+  - Preset files live in `<plugin folder>/presets/*.md`, read and written through PluginStorage, not in `.lektor/presets`. That keeps hard rule 2's single exception as it is. The plugin folder is inside the vault's hidden config folder, so presets are just as hidden and travel with the vault the same way.
+  - A preset runs as the next message of the chat that is open. Its prompt, tools, caps and model apply to that reply only, and the message keeps a snapshot of the preset, so regenerating it gives the same request.
+  - The built-ins live in code. Saving an edited built-in writes a file with the same id, which takes precedence. "Reset to built-in" deletes that file, and a setting hides a built-in.
 - *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.

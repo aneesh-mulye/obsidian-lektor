@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Aneesh Mulye
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { presetRequest } from '../presets/run';
 import type { ChatImage, ChatMessage } from '../providers/types';
 import type { Transient } from '../tools/types';
 import type { Message, ToolRound } from './types';
@@ -12,7 +13,7 @@ import type { Message, ToolRound } from './types';
  */
 export function toRequestMessages(messages: readonly Message[]): ChatMessage[] {
   return messages.flatMap((m): ChatMessage[] => {
-    if (m.role === 'user') return [{ role: 'user', content: m.content }];
+    if (m.role === 'user') return [{ role: 'user', content: m.preset ? presetRequest(m.preset, m.content) : m.content }];
     if (m.status !== 'complete' && m.status !== 'stopped' && m.status !== 'truncated') return [];
     const out = roundMessages(m.steps ?? []);
     if (m.content !== '') out.push({ role: 'assistant', content: m.content });

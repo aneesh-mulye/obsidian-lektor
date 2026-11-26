@@ -77,6 +77,7 @@ export class ToolRegistry {
         summary: out.summary,
         ...(out.urls ? { urls: out.urls } : {}),
         ...(out.proposal ? { proposal: out.proposal, proposalId: out.proposal.id } : {}),
+        ...(out.findings ? { findings: out.findings, findingsId: out.findings.id } : {}),
         ...(out.transient ? { transient: out.transient } : {}),
         ...(out.shared ? { shared: out.shared } : {}),
       };

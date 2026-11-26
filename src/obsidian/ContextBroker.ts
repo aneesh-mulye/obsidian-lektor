@@ -7,8 +7,9 @@
  * It supplies the raw vault to the core's ContextIndex and hands out only
  * that filtered index, so excluded notes are gone before anything else sees
  * the vault (DESIGN.md § Excluded folders). It also reads the editor
- * selection and works out what was dropped on the sidebar, always through
- * the same exclusion rules. It never writes.
+ * selection, works out what was dropped on the sidebar, always through
+ * the same exclusion rules, and moves the selection to show a finding. It
+ * never changes a note.
  */
 
 import { type App, type Component, MarkdownView, TFile, TFolder, debounce } from 'obsidian';
@@ -135,6 +136,30 @@ export class ContextBroker {
       to: editor.posToOffset(editor.getCursor('to')),
       hash: await sha256(text),
     };
+  }
+
+  /**
+   * Open a note and select a passage (a click on a finding's quote). `locate` places it in the
+   * note's current text. Only the selection moves; the text never changes.
+   */
+  async reveal(path: string, locate: (text: string) => { from: number; to: number } | null): Promise<boolean> {
+    const file = this.app.vault.getFileByPath(path);
+    if (!file || !this.index.note(path)) return false;
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType('markdown').find((l) => l.view instanceof MarkdownView && l.view.file?.path === path) ?? null;
+    if (!leaf) {
+      leaf = workspace.getLeaf(false);
+      await leaf.openFile(file);
+    }
+    workspace.setActiveLeaf(leaf, { focus: true });
+    const view = leaf.view;
+    if (!(view instanceof MarkdownView)) return false;
+    const at = locate(view.editor.getValue());
+    if (!at) return false;
+    const range = { from: view.editor.offsetToPos(at.from), to: view.editor.offsetToPos(at.to) };
+    view.editor.setSelection(range.from, range.to);
+    view.editor.scrollIntoView(range, true);
+    return true;
   }
 
   /** Whether there is a shareable selection, and how long it is (for the "Add selection" offer). */

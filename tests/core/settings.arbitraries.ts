@@ -91,12 +91,15 @@ export const validV3Settings = fc.record({
   privacy: fc.record({ storeFullTranscripts: fc.boolean() }),
 });
 
+export const validV4Settings = fc.tuple(validV3Settings, toolSettings).map(([v3, tools]) => ({ ...v3, version: 4 as const, tools }));
+
 export const validSettings: fc.Arbitrary<Settings> = fc
-  .tuple(validV3Settings, toolSettings)
-  .map(([v3, tools]) => ({ ...v3, version: 4 as const, tools }));
+  .tuple(validV4Settings, fc.subarray(['proofread', 'garden-paths', 'fact-check', 'mine']))
+  .map(([v4, hidden]) => ({ ...v4, version: 5 as const, presets: { hidden } }));
 
 /** Non-exclusion leaves, each with a generator of values that must be rejected. */
 export const LEAVES: Record<string, fc.Arbitrary<unknown>> = {
+  'presets.hidden': fc.oneof(fc.constant('proofread'), fc.constant([1]), fc.constant(['Bad Id']), fc.constant(['a', 'a']), fc.constant(null)),
   'review.defaultDisplayMode': fc.oneof(
     fc.string().filter((s) => !(DISPLAY_MODES as readonly string[]).includes(s)),
     fc.integer(),

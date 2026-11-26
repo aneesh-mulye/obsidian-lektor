@@ -479,6 +479,7 @@ Note for future runs: the test instance had a stray Obsidian Settings window ope
   - With no user edits, a rebase is the identity: nothing is dropped.
   - After a rebase, accepting the kept hunks in any order writes each one exactly.
   - When the text the review last saw is known (kept in memory, never stored), positions carry through the change exactly: a hunk the change didn't touch lands where the change moved it, and a hunk it touched is dropped. Without that text, each hunk is searched for by its surrounding text, which must occur exactly once.
+  - The one exception (found in milestone 8): an insertion left with none of the model's own text beside it has nothing to anchor on. It is dropped ("nothing is left to anchor it on"), never kept unplaceable.
   - A rebase stores only the model's own text (its edits, with accepted hunks applied), never the user's newer note text (H5). Repeated rebases keep at most one edit per hunk.
 - **Counterexample means:** the panel lies about what survived, a hunk lands somewhere the user didn't see it, or chat history picks up note text the model never wrote.
 
@@ -627,6 +628,107 @@ On 2026-11-26, in a separate instance, with `qwen3.8:27b` (which has vision), on
 
 The user's own Obsidian profile was unchanged before and after.
 
+## Milestone 8: Presets
+
+Decisions (2026-11-26, before milestone 8):
+
+- **Where preset files live:** `<plugin folder>/presets/*.md`, through PluginStorage (a new `presets` namespace). This replaces `.lektor/presets`, so hard rule 2 needs no new exception. The plugin folder is also a dot-folder inside the vault, so it is just as hidden and travels with the vault the same way.
+- **Running a preset:** it adds the next message to the chat that is open. Its prompt, tools, caps and model apply to that one reply.
+- **Built-ins:** they live in code, so they improve with updates. Saving an edited built-in writes a file with the same id, which takes precedence. "Reset to built-in" deletes that file, and a setting hides a built-in.
+
+Shared generator, the **preset world**: preset files made of random bytes, near-misses of valid frontmatter (missing fences, unknown fields, bad enums, tabs, CRLF, BOM, quotes left open, duplicate keys, lists in both styles) and valid presets with random Unicode prompts.
+
+### PR1. Preset parsing is total (design invariant 11) — active
+
+`tests/core/presets.property.test.ts`
+
+- **Generator:** the preset world.
+- **Properties:**
+  - Parsing any text returns either a preset or an error message for that file. It never throws.
+  - For every valid preset, parsing its serialised form gives back exactly the same preset. Serialising again gives the same text.
+  - What Lektor writes is valid YAML frontmatter: every field it writes reads back with the same value, and the body is the prompt byte for byte.
+  - Loading a folder of files gives each file exactly what parsing it alone gives. One broken file never changes another, and a broken override shows its error instead of the built-in.
+  - Built-ins are always listed unless hidden, and an override replaces exactly the built-in with its id.
+- **Counterexample means:** one bad preset file breaks Lektor or another preset, or saving a preset changes it.
+
+### PR2. A preset run sends exactly its preset (stateful) — active
+
+`tests/core/presetrun.property.test.ts`, through a real session, tool run and fake provider
+
+- **Generator:** random presets (each output kind; with or without web tools, caps, a model of their own and a display mode), random plain messages in between, regenerate and stop, the globe on or off, a search provider set or not, models with and without native tool calling, and each display mode.
+- **Properties:**
+  - **The prompt:** a preset reply's every request carries its prompt in exactly one system message. Requests for plain messages before or after it carry no preset prompt. Regenerate sends the same prompt again (the saved snapshot, even if the preset changed since).
+  - **Findings output:** offers `report_findings` and never `propose_edit` or `propose_note`.
+  - **Edits output:** offers `propose_edit` exactly when a plain message would (an editable note is in context, and the chat is not in Prose mode).
+  - **Chat output:** offers neither.
+  - **Web tools:** only those the preset lists, and only if they would be available anyway (the globe on, and a search provider set up for `web_search`). The preset's caps replace the global caps for that reply only.
+  - **Models without native tool calling:** findings presets get the fenced `lektor-findings` instructions instead.
+  - **The model:** a preset's own model is used for that reply, and the chat's model is unchanged afterwards.
+- **Counterexample means:** a preset leaks into other messages, or gets tools it shouldn't.
+
+### F1. Findings point at real text — active
+
+`tests/core/findings.property.test.ts`
+
+- **Generator:** the edit world's notes, and `report_findings` arguments with quotes that occur once, several times or not at all, as well as paths outside the context or excluded, sources with known and unknown URLs, and garbage arguments. It also covers fenced `lektor-findings` blocks.
+- **Properties:**
+  - A findings set exists only for a note in this reply's context.
+  - Each stored finding's quote occurs exactly once in the note's text at report time, at its stored position. The rest are refused, and the tool result names them so the model can send longer quotes. If none fit, the model gets a tool error and nothing is stored.
+  - A source is shown as a link only if its URL is known to the chat (search results, fetched pages, the user's messages, attached notes). Otherwise it is shown as plain text and can't be clicked.
+  - Reporting findings never writes to the vault.
+- **Counterexample means:** a highlight points at the wrong passage, or a model-made URL becomes a link the user might click.
+
+### F2. Highlights match the findings — active
+
+`tests/core/findings.property.test.ts`
+
+- **Generator:** findings sets, then random user edits to the note (none, elsewhere, inside a quote, pasting a copy of a quote), and dismissals.
+- **Property:** an open finding is highlighted exactly on its quote. If the note is unchanged since the report, the highlight is at the stored position. Otherwise it appears only where the quote occurs exactly once, and never anywhere else. Dismissed findings are never highlighted.
+- **Counterexample means:** the highlight in the note isn't the passage the finding is about.
+
+### H6. Findings and preset runs in history — active
+
+`tests/core/history.property.test.ts`
+
+- **Property:** findings sets (status included), the preset snapshot on a user message, and the link from a tool result or a fenced reply to its findings all survive a save and a load. A file with a malformed finding loses only that chat, as for H1.
+
+### Regressions (milestone 8)
+
+- **PR1, YAML agreement:** two real divergences from YAML, each now a unit test.
+  - A value starting with "- " (YAML reads a list) was read as text.
+  - A comment right after a quoted value or a list, without a space (`"A"#x`, which YAML rejects), was accepted.
+- **B1 seed -1905239307, a real bug from milestone 6:** the user deleted the text just before an insertion at the end of the note, so none of the model's text was left beside it. The rebase "kept" it with an empty anchor, so it could never be placed or applied. It is now dropped with its reason, and B1 and B3 allow exactly that case.
+- **B1 seed 1504067721, a mistake in the test:** a model edit that changes nothing (`the` → `the`) has no hunk, so a proposal untouched by any rebase can have more edits than hunks. The "at most one edit per hunk" bound now applies only once a rebase has rewritten the proposal.
+- **Mutation testing:** 20 mutants of the preset, findings and tool-run code, all killed. One, ignoring hidden built-ins, survived until a test of the library over storage was added.
+
+These three only showed up after hundreds of 1,000-case runs.
+
+### Checked in a real Obsidian (milestone 8)
+
+On 2026-11-26, in a separate instance, with `qwen3.8:27b` on a copy of `fixtures/vault` (DuckDuckGo as the search provider). The stored version-4 settings migrated to version 5.
+
+- **Entry points:** a new chat showed the three sample actions. The preset row had Proofread, Garden paths and Fact-check; the sidebar was under 320 px, so icons only. The command palette had `lektor:preset-proofread`, `-garden-paths` and `-fact-check`.
+- **Proofread (sample action):**
+  - **The request:** it offered only `report_findings` and `request_context`, carried the proofread prompt as a system message, and the user turn was "Run the “Proofread” preset on the notes in the context."
+  - **Findings:** the doubled "The the", "their" → "there", "fourty", a missing "that", and, in a second call, "it's" → "its". Each appeared as a card and as dotted highlights in the note.
+  - **On the findings:** clicking a quote selected exactly that passage in the note. Hovering a highlight showed its card with Suggest fix and Dismiss, and dismissing one removed its highlight.
+- **Suggest fix:** it sent "Suggest a fix for this doubled-word in Drafts/Essay.md: “The the lighthouse …” … Use propose_edit, changing only that passage." The request had `propose_edit` and no preset prompt. The model proposed the edit, which showed as an inline mark.
+- **Slash command:** typing `/gar` offered `/garden-paths`, and Tab completed it. The request carried only the garden-path prompt, not Proofread's. It found the three planted garden-path sentences, each with its misreading explained.
+- **Fact-check:**
+  - **The request:** it offered web search and page fetching. Over four rounds it searched three times (two DuckDuckGo searches failed), fetched one page, and its second fetch hit the preset's cap.
+  - **What it found:** "Robert Louis Stevenson designed the Skerryvore lighthouse himself" was marked wrong (it was Alan Stevenson), and so was "The Eiffel Tower was completed in 1899" (it was 1889).
+  - **Sources:** all three source URLs came from its searches, so all three were links.
+- **Globe off:** the Fact-check button turned amber, with the "No web search — …" tooltip. Clicking it showed the confirmation, and Cancel sent nothing.
+- **Settings:**
+  - **Files written by hand:** after Reload, the list showed `tone.md` ("Tone check · Yours · /tone · Chat") and `broken.md` with "This file can't be used: Line 3: "bogus" is not a preset field …".
+  - **Hiding a built-in:** turning Garden paths off removed it from the preset row and the command palette, and `data.json` recorded `presets.hidden: ["garden-paths"]`.
+  - **The hand-written preset:** `/tone` ran it, and the message showed its badge.
+- **History:** the saved chat kept the four preset snapshots and the findings sets, the dismissed finding included.
+
+Note for future runs: Obsidian opens Settings in a separate window here (`activeDocument !== document`), so look for settings elements in `activeDocument`.
+
+The user's own Obsidian profile was unchanged before and after.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.
@@ -641,7 +743,7 @@ These come from `docs/DESIGN.md` § Testing. Each gets a full generator, propert
 8. **Proposal validation:** active as W2.
 9. **Caps hold:** active as T2.
 10. **Lockdown flags are unconditional:** planned (M10, M11).
-11. **Preset parsing is total:** planned (M8).
+11. **Preset parsing is total:** active as PR1.
 
 Also from the design: **link-depth preview matches what is sent**, active as X4.
 

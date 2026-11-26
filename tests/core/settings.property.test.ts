@@ -28,6 +28,7 @@ import {
   validV1Settings,
   validV2Settings,
   validV3Settings,
+  validV4Settings,
   toolSettings,
 } from './settings.arbitraries';
 
@@ -144,10 +145,11 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v1;
         expect(store.settings).toEqual({
           ...rest,
-          version: 4,
+          version: 5,
           models: DEFAULT_SETTINGS.models,
           context: { ...rest.context, respectObsidianExclusions: true },
           tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
+          presets: { hidden: [] },
         });
         expect(store.problems).toEqual([]);
         expect(store.exclusionsIntact).toBe(true);
@@ -162,10 +164,11 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v2;
         expect(store.settings).toEqual({
           ...rest,
-          version: 4,
+          version: 5,
           models: { ...rest.models, ollama: { ...rest.models.ollama, contextLength: 32768 } },
           context: { ...rest.context, respectObsidianExclusions: true },
           tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
+          presets: { hidden: [] },
         });
         expect(store.problems).toEqual([]);
       }),
@@ -177,9 +180,20 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV3Settings, (v3) => {
         const store = SettingsStore.load(disk(v3));
         const { version: _v, ...rest } = v3;
-        expect(store.settings).toEqual({ ...rest, version: 4, tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools } });
+        expect(store.settings).toEqual({ ...rest, version: 5, tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools }, presets: { hidden: [] } });
         expect(store.settings.tools.searchProvider).toBe('none');
         expect(store.settings.tools.secrets).toEqual({ tavily: '', exa: '', brave: '' });
+        expect(store.problems).toEqual([]);
+      }),
+    );
+  });
+
+  it('S9: version-4 settings migrate to version 5 losslessly, with no presets hidden', () => {
+    fc.assert(
+      fc.property(validV4Settings, (v4) => {
+        const store = SettingsStore.load(disk(v4));
+        const { version: _v, ...rest } = v4;
+        expect(store.settings).toEqual({ ...rest, version: 5, presets: { hidden: [] } });
         expect(store.problems).toEqual([]);
       }),
     );

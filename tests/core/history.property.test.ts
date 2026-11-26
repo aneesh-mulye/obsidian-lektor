@@ -8,7 +8,9 @@ import { describe, expect, it } from 'vitest';
 import { ChatHistory } from '../../src/core/chat/history';
 import type { AssistantMessage, Chat, Message } from '../../src/core/chat/types';
 import { type Chip, EMPTY_CONTEXT } from '../../src/core/context/state';
+import { type FindingSet, VERDICTS } from '../../src/core/findings/findings';
 import { type Storage, StorageError, type StorageNamespace, isStorageKey } from '../../src/core/storage';
+import { preset } from './presets.fixtures';
 
 /** In-memory Storage with the same key rules as PluginStorage. */
 class MemStorage implements Storage {
@@ -42,7 +44,9 @@ const id = fc.constantFrom('a1', 'b2', 'c3', 'd4', 'e5');
 const ref = fc.record({ provider: fc.constantFrom('ollama', 'none'), model: fc.constantFrom('qwen3.8:27b', 'none', 'm') });
 const text = fc.oneof(fc.string(), fc.string({ unit: 'binary' }), fc.string({ unit: 'grapheme' }));
 const message: fc.Arbitrary<Message> = fc.oneof(
-  fc.record({ id: fc.uuid(), role: fc.constant('user' as const), content: text, createdAt: fc.nat() }),
+  fc
+    .record({ id: fc.uuid(), role: fc.constant('user' as const), content: text, createdAt: fc.nat(), preset: fc.option(preset, { nil: undefined }) })
+    .map(({ preset: p, ...m }) => (p ? { ...m, preset: p } : m)),
   fc
     .record(
       {
@@ -65,7 +69,7 @@ const message: fc.Arbitrary<Message> = fc.oneof(
                   name: fc.constantFrom('web_search', 'fetch_page'),
                   arguments: fc.jsonValue(),
                   result: fc.record(
-                    { ok: fc.boolean(), content: text, summary: fc.string(), limit: fc.boolean(), urls: fc.array(fc.webUrl(), { maxLength: 2 }), contextHash: fc.string() },
+                    { ok: fc.boolean(), content: text, summary: fc.string(), limit: fc.boolean(), urls: fc.array(fc.webUrl(), { maxLength: 2 }), contextHash: fc.string(), findingsId: fc.string() },
                     { requiredKeys: ['ok', 'content', 'summary'] },
                   ),
                 },
@@ -96,11 +100,37 @@ const message: fc.Arbitrary<Message> = fc.oneof(
           },
           { requiredKeys: ['notes', 'selections', 'backlinkLists', 'excluded'] },
         ),
+        fencedFindings: fc.array(fc.string(), { minLength: 1, maxLength: 2 }),
       },
       { requiredKeys: ['id', 'role', 'content', 'reasoning', 'status', 'model', 'createdAt'] },
     )
     .map((m) => m as AssistantMessage),
 );
+/** Findings sets as reported (INVARIANTS.md H6). */
+const findingSet: fc.Arbitrary<FindingSet> = fc.record({
+  id: fc.string(),
+  path: fc.constantFrom('a.md', 'Drafts/Essay.md'),
+  expect: fc.string(),
+  findings: fc.array(
+    fc.record(
+      {
+        id: fc.string(),
+        quote: text,
+        at: fc.nat(),
+        kind: fc.constantFrom('typo', 'garden-path', 'claim'),
+        explanation: text,
+        verdict: fc.constantFrom(...VERDICTS),
+        sources: fc.array(fc.record({ url: fc.webUrl(), known: fc.boolean() }), { maxLength: 2 }),
+        status: fc.constantFrom('open' as const, 'dismissed' as const),
+      },
+      { requiredKeys: ['id', 'quote', 'at', 'kind', 'explanation', 'sources', 'status'] },
+    ),
+    { maxLength: 3 },
+  ),
+  createdAt: fc.nat(),
+  model: ref,
+});
+
 /** Selection text and sentContext values may carry this token; nothing else does. */
 const SECRET = 'QQSENTQQ';
 
@@ -199,12 +229,14 @@ const chat = (chatId: string): fc.Arbitrary<Chat> =>
         { nil: undefined },
       ),
       displayMode: fc.option(fc.constantFrom('prose' as const, 'sidebar' as const, 'inline' as const), { nil: undefined }),
+      findings: fc.option(fc.dictionary(fc.string({ minLength: 1 }), findingSet, { maxKeys: 2 }), { nil: undefined }),
     })
-    .map(({ sentContext, proposals, displayMode, ...c }) => ({
+    .map(({ sentContext, proposals, displayMode, findings, ...c }) => ({
       ...c,
       ...(sentContext === undefined ? {} : { sentContext }),
       ...(proposals === undefined ? {} : { proposals }),
       ...(displayMode === undefined ? {} : { displayMode }),
+      ...(findings === undefined ? {} : { findings }),
     }));
 
 /** What a load gives back: mid-stream replies as stopped; selection text and "changed" marks never stored. */

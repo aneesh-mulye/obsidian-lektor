@@ -9,6 +9,7 @@ import type { ContextManifest } from '../context/prepare';
 import type { ContextState } from '../context/state';
 import type { ChatImage, ModelRef } from '../providers/types';
 import type { AttachmentMode } from '../settings';
+import type { FindingSet } from '../findings/findings';
 import type { Proposal } from '../review/types';
 import type { KnownUrls } from './urls';
 
@@ -70,6 +71,8 @@ export interface ToolOutcome {
   urls?: string[];
   /** A proposal for the user to review (propose_edit, propose_note). */
   proposal?: Proposal;
+  /** Findings to show in the note and the chat (report_findings). */
+  findings?: FindingSet;
   /**
    * What the model is sent for the rest of this reply instead of `content`, which is what chat
    * history keeps (request_context: the shared text, while history keeps only the paths).
@@ -122,6 +125,10 @@ export interface StepResult {
   proposalId?: string;
   /** Only in flight: the session moves it into the chat and keeps `proposalId`. */
   proposal?: Proposal;
+  /** The findings this call reported, kept in the chat (`Chat.findings`). */
+  findingsId?: string;
+  /** Only in flight: the session moves them into the chat and keeps `findingsId`. */
+  findings?: FindingSet;
   /** Only in flight: what the model gets this reply (never saved). */
   transient?: Transient;
   /** Only in flight: the session turns these into chips and adds them to the reply's manifest. */

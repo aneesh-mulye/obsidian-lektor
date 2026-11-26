@@ -13,7 +13,7 @@ import {
 } from '../../src/core/storage';
 
 // Independent reference model.
-const EXT: Record<string, string> = { chats: '.json', history: '.jsonl' };
+const EXT: Record<string, string> = { chats: '.json', history: '.jsonl', meta: '.json', presets: '.md' };
 const KEY_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/;
 // eslint-disable-next-line no-control-regex -- control characters are exactly what must be rejected
@@ -46,7 +46,7 @@ const root = fc.oneof(
   fc.anything(),
 );
 const namespace = fc.oneof(
-  { weight: 6, arbitrary: fc.constantFrom('chats', 'history') },
+  { weight: 6, arbitrary: fc.constantFrom('chats', 'history', 'meta', 'presets') },
   fc.constantFrom('Chats', 'chats/', '../chats', '__proto__', 'constructor', 'toString', '', 'void'),
   fc.anything(),
 );
@@ -110,7 +110,7 @@ describe('storage paths (INVARIANTS.md P1–P2)', () => {
 
   it('P1: keyFromStoragePath inverts resolveStoragePath and rejects every other path', () => {
     const validRoot = root.filter(modelRootOk);
-    const validNs = fc.constantFrom<'chats' | 'history'>('chats', 'history');
+    const validNs = fc.constantFrom<'chats' | 'history' | 'meta' | 'presets'>('chats', 'history', 'meta', 'presets');
     fc.assert(
       fc.property(validRoot, validNs, key, (r, n, k) => {
         if (modelKeyOk(k)) return keyFromStoragePath(r, n, resolveStoragePath(r, n, k)) === k;
@@ -119,7 +119,7 @@ describe('storage paths (INVARIANTS.md P1–P2)', () => {
     );
     // Arbitrary paths: the result is null or a valid key whose resolved path is exactly that input.
     const somePath = fc.oneof(
-      fc.tuple(validRoot, fc.constantFrom('chats', 'history', 'other'), fc.string(), fc.constantFrom('.json', '.jsonl', '', '.md'))
+      fc.tuple(validRoot, fc.constantFrom('chats', 'history', 'meta', 'presets', 'other'), fc.string(), fc.constantFrom('.json', '.jsonl', '', '.md'))
         .map(([r, n, k, e]) => `${r}/${n}/${k}${e}`),
       fc.string(),
     );
@@ -132,7 +132,7 @@ describe('storage paths (INVARIANTS.md P1–P2)', () => {
   });
 
   it('P2: distinct keys never collide, even case-insensitively', () => {
-    const pair = fc.tuple(fc.constantFrom<'chats' | 'history'>('chats', 'history'), key.filter(modelKeyOk));
+    const pair = fc.tuple(fc.constantFrom<'chats' | 'history' | 'meta' | 'presets'>('chats', 'history', 'meta', 'presets'), key.filter(modelKeyOk));
     fc.assert(
       fc.property(pair, pair, ([n1, k1], [n2, k2]) => {
         fc.pre(n1 !== n2 || k1 !== k2);

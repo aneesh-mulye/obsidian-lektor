@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 /**
- * Lektor's own data (chat history, the AI edit log) lives under the plugin
+ * Lektor's own data (chat history, the AI edit log, presets) lives under the plugin
  * folder, `<config dir>/plugins/<folder>/<namespace>/<key><ext>`. These pure
  * functions are the only way to build such a path; src/obsidian/PluginStorage.ts
  * is lint-gated to pass every adapter call a path from them (INVARIANTS.md G6,
@@ -14,6 +14,8 @@ export const STORAGE_NAMESPACES = {
   history: '.jsonl',
   /** Small bookkeeping files, e.g. the AI edit log's note-id index. */
   meta: '.json',
+  /** User presets and edited built-ins (DESIGN.md § Presets): Markdown with frontmatter. */
+  presets: '.md',
 } as const;
 
 export type StorageNamespace = keyof typeof STORAGE_NAMESPACES;

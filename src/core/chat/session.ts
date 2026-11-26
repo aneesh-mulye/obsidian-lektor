@@ -15,6 +15,9 @@ import type { ChatMessage, ChatProvider, ChatRequest, ModelRef, ToolCall } from 
 import type { Proposal } from '../review/types';
 import type { DisplayMode } from '../settings';
 import type { ApprovalItem, ApprovalRequest, Shared, Transient } from '../tools/types';
+import type { FindingSet } from '../findings/findings';
+import type { Preset } from '../presets/preset';
+import { type Delivery, presetInstructions } from '../presets/run';
 import { imagesMessage, messagesTokens, roundMessages, titleFrom, toRequestMessages } from './transcript';
 import type { AssistantMessage, Chat, Clock, Message, ProviderLookup, ToolRun, ToolsDeps } from './types';
 
@@ -73,13 +76,29 @@ export class ChatSession {
     return () => this.#listeners.delete(listener);
   }
 
-  /** Send a user message. Returns false (and does nothing) while busy or for blank text. */
-  send(text: string): boolean {
-    if (this.#busy || text.trim() === '') return false;
-    const user: Message = { id: this.deps.newId(), role: 'user', content: text, createdAt: this.deps.clock.now() };
-    if (this.#chat.messages.length === 0) this.#set({ ...this.#chat, title: titleFrom(text) });
+  /**
+   * Send a user message, or run a preset (with anything typed after its slash command). Returns
+   * false (and does nothing) while busy, or for blank text without a preset.
+   */
+  send(text: string, preset?: Preset): boolean {
+    if (this.#busy || (!preset && text.trim() === '')) return false;
+    const content = preset ? text.trim() : text;
+    const user: Message = { id: this.deps.newId(), role: 'user', content, createdAt: this.deps.clock.now(), ...(preset ? { preset } : {}) };
+    if (this.#chat.messages.length === 0) this.#set({ ...this.#chat, title: titleFrom(preset ? `${preset.name}${content ? `: ${content}` : ''}` : text) });
+    // A preset may ask for a display mode; the chat switches to it (the header shows it, and the user can switch back).
+    if (preset?.display && preset.display !== this.#chat.displayMode) this.#set({ ...this.#chat, displayMode: preset.display });
     this.#start([...this.#chat.messages, user]);
     return true;
+  }
+
+  /** Dismiss a finding (a click on its ✕). Never writes to the vault. */
+  dismissFinding(setId: string, findingId: string): void {
+    const set = this.#chat.findings?.[setId];
+    if (!set) return;
+    const next: FindingSet = { ...set, findings: set.findings.map((f) => (f.id === findingId ? { ...f, status: 'dismissed' } : f)) };
+    this.#set({ ...this.#chat, findings: { ...this.#chat.findings, [setId]: next } });
+    this.#emit();
+    this.#persist();
   }
 
   /** Replace the last reply with a new one. Returns false while busy or if the last message is not a reply. */
@@ -130,7 +149,9 @@ export class ChatSession {
   // -------------------------------------------------------------------------
 
   #start(history: readonly Message[]): void {
-    const model = this.#chat.model;
+    // A preset's own model answers its run; the chat's model is unchanged (INVARIANTS.md PR2).
+    const last = history.at(-1);
+    const model = (last?.role === 'user' ? last.preset?.model : undefined) ?? this.#chat.model;
     const reply: AssistantMessage = {
       id: this.deps.newId(),
       role: 'assistant',
@@ -179,7 +200,16 @@ export class ChatSession {
       const baseEstimate = (prepared?.tokens ?? 0) + messagesTokens(transcript, estimateTokens, MESSAGE_OVERHEAD);
       // One tool run (one budget) per user message (INVARIANTS.md T2).
       const editable = prepared ? [...new Set([...prepared.manifest.notes.map((n) => n.path), ...prepared.manifest.selections.map((x) => x.path)])] : [];
-      const tools = this.deps.tools?.forReply({ chat: this.#chat, capabilities: caps, contextUrls: prepared?.urls ?? [], editable }) ?? null;
+      const lastUser = history.at(-1);
+      const preset = lastUser?.role === 'user' ? lastUser.preset : undefined;
+      const tools =
+        this.deps.tools?.forReply({ chat: this.#chat, capabilities: caps, contextUrls: prepared?.urls ?? [], editable, ...(preset ? { preset } : {}) }) ?? null;
+      // A preset's prompt is sent for this reply only, in one system message (INVARIANTS.md PR2).
+      if (preset) {
+        const wanted = preset.output === 'findings' ? 'report_findings' : 'propose_edit';
+        const delivery: Delivery = tools?.definitions.some((d) => d.name === wanted) ? 'tool' : tools?.fenced ? 'fenced' : 'none';
+        base.push({ role: 'system', content: presetInstructions(preset, delivery) });
+      }
       if (tools?.instructions) base.push({ role: 'system', content: tools.instructions });
       if (tools?.fenced) base.push({ role: 'system', content: tools.fenced.instructions });
 
@@ -214,12 +244,13 @@ export class ChatSession {
         }));
         this.#emit();
         for (let i = 0; i < calls.length; i++) {
-          const { proposal, transient: sent, shared, ...stored } = await tools!.execute(calls[i]!, signal, (request) => this.#askApproval(request), {
+          const { proposal, findings, transient: sent, shared, ...stored } = await tools!.execute(calls[i]!, signal, (request) => this.#askApproval(request), {
             choose: (request) => this.#askChoice(request),
             context: () => this.#chat.context,
           });
           if (!live()) return;
           if (proposal) this.#set({ ...this.#chat, proposals: { ...(this.#chat.proposals ?? {}), [proposal.id]: proposal } });
+          if (findings) this.#set({ ...this.#chat, findings: { ...(this.#chat.findings ?? {}), [findings.id]: findings } });
           let result = stored;
           if (sent) {
             transient.set(calls[i]!.id, sent);
@@ -303,17 +334,22 @@ export class ChatSession {
     }
   }
 
-  /** A finished reply from a model without tool calling: turn its `lektor-edit` blocks into proposals. */
+  /** A finished reply from a model without tool calling: turn its fenced blocks into proposals or findings. */
   async #extractFenced(fenced: NonNullable<ToolRun['fenced']>): Promise<void> {
     const reply = this.#reply();
     if (reply?.status !== 'complete') return;
-    const { proposals, problems } = await fenced.extract(reply.content);
-    if (proposals.length === 0 && problems.length === 0) return;
-    this.#set({ ...this.#chat, proposals: { ...(this.#chat.proposals ?? {}), ...Object.fromEntries(proposals.map((p) => [p.id, p])) } });
+    const { proposals, findings = [], problems } = await fenced.extract(reply.content);
+    if (proposals.length === 0 && findings.length === 0 && problems.length === 0) return;
+    this.#set({
+      ...this.#chat,
+      proposals: { ...(this.#chat.proposals ?? {}), ...Object.fromEntries(proposals.map((p) => [p.id, p])) },
+      ...(findings.length > 0 ? { findings: { ...(this.#chat.findings ?? {}), ...Object.fromEntries(findings.map((f) => [f.id, f])) } } : {}),
+    });
     this.#updateReply((r) => ({
       ...r,
       ...(proposals.length > 0 ? { fencedProposals: proposals.map((p) => p.id) } : {}),
-      ...(problems.length > 0 ? { notice: `Some proposed edits could not be used: ${problems.join(' ')}` } : {}),
+      ...(findings.length > 0 ? { fencedFindings: findings.map((f) => f.id) } : {}),
+      ...(problems.length > 0 ? { notice: `Some ${findings.length > 0 || /finding/i.test(problems.join(' ')) ? 'findings' : 'proposed edits'} could not be used: ${problems.join(' ')}` } : {}),
     }));
     this.#emit();
     this.#persist();

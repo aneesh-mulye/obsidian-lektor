@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { ContextManifest } from '../context/prepare';
+import type { FindingSet } from '../findings/findings';
+import type { Preset } from '../presets/preset';
 import type { ContextState } from '../context/state';
 import type { Capabilities, ChatProvider, ModelRef, ToolCall, ToolDefinition } from '../providers/types';
 import type { Proposal } from '../review/types';
@@ -13,8 +15,11 @@ export type ReplyStatus = 'streaming' | 'complete' | 'stopped' | 'truncated' | '
 export interface UserMessage {
   readonly id: string;
   readonly role: 'user';
+  /** What the user typed (for a preset run, anything typed after the slash command; may be empty). */
   readonly content: string;
   readonly createdAt: number;
+  /** A preset run: the preset as it was when it ran, so regenerating sends the same request (DESIGN.md § Presets). */
+  readonly preset?: Preset;
 }
 
 /** One tool call within a reply, and its result once it has run. */
@@ -53,6 +58,8 @@ export interface AssistantMessage {
   readonly steps?: readonly ToolRound[];
   /** Proposals made through fenced `lektor-edit` blocks in this reply (models without tool calling). */
   readonly fencedProposals?: readonly string[];
+  /** Findings reported through fenced `lektor-findings` blocks in this reply. */
+  readonly fencedFindings?: readonly string[];
   /** An approval the reply is waiting for (never saved). */
   readonly approval?: { readonly id: string } & ApprovalRequest;
 }
@@ -76,6 +83,8 @@ export interface Chat {
   readonly proposals?: Readonly<Record<string, Proposal>>;
   /** How this chat shows proposals (the header toggle). Chats saved before milestone 6 use the setting. */
   readonly displayMode?: DisplayMode;
+  /** Findings reported in this chat, by id; their lists appear where the model reported them. */
+  readonly findings?: Readonly<Record<string, FindingSet>>;
 }
 
 /** The chat's display mode, or the setting's default for chats that never chose one. */
@@ -88,12 +97,12 @@ export interface ToolRun {
   definitions: ToolDefinition[];
   execute(call: ToolCall, signal: AbortSignal, approve: (request: ApprovalRequest) => Promise<boolean>, extra?: ToolExtras): Promise<StepResult>;
   /**
-   * For models without tool calling: instructions for proposing edits in fenced
-   * `lektor-edit` blocks, and a way to turn a finished reply's blocks into proposals.
+   * For models without tool calling: instructions for proposing edits (or reporting findings) in
+   * fenced blocks, and a way to turn a finished reply's blocks into proposals and findings.
    */
   fenced?: {
     instructions: string;
-    extract(reply: string): Promise<{ proposals: Proposal[]; problems: string[] }>;
+    extract(reply: string): Promise<{ proposals: Proposal[]; findings?: FindingSet[]; problems: string[] }>;
   };
   /** A system instruction for this reply (Prose mode: describe changes in words). */
   instructions?: string;
@@ -115,6 +124,8 @@ export interface ToolsDeps {
     contextUrls: readonly string[];
     /** Notes in this reply's context, which the model may propose edits to. */
     editable: readonly string[];
+    /** The preset this reply runs, if any: its output decides the review tools, and its tools and caps apply. */
+    preset?: Preset;
   }): ToolRun | null;
 }
 

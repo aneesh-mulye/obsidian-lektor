@@ -21,6 +21,9 @@ import { EditLog } from './core/review/log';
 import { ReviewManager } from './core/review/manager';
 import { fencedEdits, proposeEditTool, proposeNoteTool } from './core/review/tools';
 import { EditHistoryModal } from './obsidian/EditHistoryModal';
+import { fencedFindings, placeFinding, reportFindingsTool } from './core/findings/findings';
+import { PresetLibrary } from './core/presets/library';
+import { presetStarter } from './obsidian/presets';
 import { ReviewController } from './obsidian/ReviewController';
 import { inlineSource, watchStaleness } from './obsidian/InlineReview';
 import { focusProposal } from './obsidian/ui/Review';
@@ -32,6 +35,8 @@ import type { ContextUi } from './obsidian/ui/ContextBar';
 
 export default class LektorPlugin extends Plugin {
   editLog!: EditLog;
+  /** Presets (DESIGN.md § Presets): the built-ins and the files in `presets/`. */
+  presets!: PresetLibrary;
   private review!: ReviewManager;
   // Not `settings`: Obsidian 1.13+ declares Plugin.settings for raw loaded data.
   settingsStore: SettingsStore = SettingsStore.load(null);
@@ -101,6 +106,8 @@ export default class LektorPlugin extends Plugin {
     registry.register(proposeEditTool(reviewDeps));
     registry.register(proposeNoteTool(reviewDeps));
     registry.register(requestContextTool({ index: this.broker.index, maxDepth: () => settings().context.maxLinkDepth as Depth }));
+    const findingsDeps = { readNote: (path: string) => this.broker.index.read(path), newId, now: () => Date.now() };
+    registry.register(reportFindingsTool(findingsDeps));
     const tools = toolRuns(registry, {
       webNames: () => [...(settings().tools.searchProvider !== 'none' ? ['web_search'] : []), 'fetch_page'],
       // Prose mode chats get no edit tools (DESIGN.md § Display modes; toolRuns checks the chat's mode).
@@ -109,7 +116,13 @@ export default class LektorPlugin extends Plugin {
       limits: () => ({ searches: settings().tools.searchesPerMessage, fetches: settings().tools.fetchesPerMessage }),
       attachmentMode: () => settings().context.attachmentMode,
       fenced: (editable, model) => fencedEdits(reviewDeps, editable, model),
+      fencedFindings: (editable, known, model) => fencedFindings(findingsDeps, editable, known, model),
     });
+
+    // Presets live in the plugin folder, through PluginStorage (DESIGN.md § Decided, before milestone 8).
+    const presets = new PresetLibrary(storage, () => settings().presets.hidden);
+    this.presets = presets;
+    await presets.load();
 
     this.chats = new ChatManager({
       providers: { get: (id) => byId.get(id) },
@@ -149,6 +162,7 @@ export default class LektorPlugin extends Plugin {
         focusProposal(id);
         void this.activateView();
       },
+      notice,
     };
     controller.registerInline(this, inlineSource(inlineDeps));
     const staleness = watchStaleness(inlineDeps);
@@ -227,6 +241,14 @@ export default class LektorPlugin extends Plugin {
       maxDepth: () => settings().context.maxLinkDepth as Depth,
     };
 
+    const starter = presetStarter({
+      app: this.app,
+      chats: this.chats,
+      providers,
+      searchConfigured: () => settings().tools.searchProvider !== 'none',
+      notice,
+    });
+
     const clearAllChats = async () => {
       const ok = await confirm(this.app, {
         title: 'Clear all chats?',
@@ -249,6 +271,17 @@ export default class LektorPlugin extends Plugin {
             manager: review,
             openNote: (path) => void this.app.workspace.openLinkText(path, '', false),
             defaultMode: () => settings().review.defaultDisplayMode,
+          },
+          presets: {
+            library: presets,
+            starter,
+            findings: {
+              reveal: (set, finding) => {
+                void this.broker.reveal(set.path, (text) => placeFinding(text, set, finding)).then((ok) => {
+                  if (!ok) notice('That passage is no longer in the note as quoted.');
+                });
+              },
+            },
           },
         }),
     );
@@ -281,6 +314,28 @@ export default class LektorPlugin extends Plugin {
       else new EditHistoryModal(this.app, path, editLog, review).open();
     };
     this.addCommand({ id: 'show-ai-history', name: 'Show AI edit history for this note', callback: () => showHistory(this.broker.activeNote()) });
+
+    // One command per preset, so each can have a hotkey; kept in step with the library.
+    let presetCommands: string[] = [];
+    const registerPresetCommands = () => {
+      for (const id of presetCommands) this.removeCommand(id);
+      presetCommands = [];
+      for (const p of presets.runnable()) {
+        const id = `preset-${p.id}`;
+        presetCommands.push(id);
+        this.addCommand({
+          id,
+          name: `Run preset: ${p.name}`,
+          icon: p.icon,
+          callback: () => {
+            const current = presets.get(p.id);
+            if (current) void this.activateView().then(() => starter.start(current));
+          },
+        });
+      }
+    };
+    registerPresetCommands();
+    this.register(presets.subscribe(registerPresetCommands));
     this.registerEvent(
       this.app.workspace.on('file-menu', (menu, file) => {
         if (!file.path.toLowerCase().endsWith('.md')) return;

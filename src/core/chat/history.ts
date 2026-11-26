@@ -10,15 +10,32 @@
 import { z } from 'zod';
 import { type Chip, EMPTY_CONTEXT } from '../context/state';
 import type { ModelRef } from '../providers/types';
+import { VERDICTS } from '../findings/findings';
+import { PRESET_OUTPUTS, PRESET_TOOLS } from '../presets/preset';
 import { ATTACHMENT_MODES, DISPLAY_MODES, ModelRefSchema } from '../settings';
 import type { Storage } from '../storage';
 import type { Chat } from './types';
+
+/** The preset a user message ran, as it was then (INVARIANTS.md H6). */
+const PresetSnapshot = z.strictObject({
+  id: z.string(),
+  name: z.string(),
+  icon: z.string(),
+  model: ModelRefSchema.optional(),
+  tools: z.array(z.enum(PRESET_TOOLS)),
+  display: z.enum(DISPLAY_MODES).optional(),
+  output: z.enum(PRESET_OUTPUTS),
+  searches: z.number().optional(),
+  fetches: z.number().optional(),
+  prompt: z.string(),
+});
 
 const UserMessage = z.strictObject({
   id: z.string(),
   role: z.literal('user'),
   content: z.string(),
   createdAt: z.number(),
+  preset: PresetSnapshot.optional(),
 });
 
 const Manifest = z.strictObject({
@@ -60,6 +77,7 @@ const AssistantMessage = z.strictObject({
                 limit: z.boolean().optional(),
                 urls: z.array(z.string()).optional(),
                 proposalId: z.string().optional(),
+                findingsId: z.string().optional(),
                 contextHash: z.string().optional(),
               })
               .optional(),
@@ -69,6 +87,27 @@ const AssistantMessage = z.strictObject({
     )
     .optional(),
   fencedProposals: z.array(z.string()).optional(),
+  fencedFindings: z.array(z.string()).optional(),
+});
+
+const FindingSetRecord = z.strictObject({
+  id: z.string(),
+  path: z.string(),
+  expect: z.string(),
+  findings: z.array(
+    z.strictObject({
+      id: z.string(),
+      quote: z.string(),
+      at: z.number(),
+      kind: z.string(),
+      explanation: z.string(),
+      verdict: z.enum(VERDICTS).optional(),
+      sources: z.array(z.strictObject({ url: z.string(), known: z.boolean() })),
+      status: z.enum(['open', 'dismissed']),
+    }),
+  ),
+  createdAt: z.number(),
+  model: ModelRefSchema,
 });
 
 const Proposal = z.discriminatedUnion('kind', [
@@ -150,6 +189,7 @@ const ChatV2 = ChatV1.extend({
   toolsDisabled: z.boolean().optional(),
   proposals: z.record(z.string(), Proposal).optional(),
   displayMode: z.enum(DISPLAY_MODES).optional(),
+  findings: z.record(z.string(), FindingSetRecord).optional(),
 });
 
 const FileSchema = z.discriminatedUnion('version', [

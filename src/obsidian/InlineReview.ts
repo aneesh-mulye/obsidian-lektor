@@ -13,12 +13,15 @@
  */
 
 import type { ChatManager } from '../core/chat/manager';
+import { findingMarks, suggestFixMessage } from '../core/findings/findings';
+import { normaliseUrl } from '../core/tools/urls';
+import { findingTone } from './ui/Findings';
 import { displayModeOf } from '../core/chat/types';
 import type { ReviewManager } from '../core/review/manager';
 import { inlineMarks } from '../core/review/rebase';
 import type { EditProposal } from '../core/review/types';
 import type { DisplayMode } from '../core/settings';
-import type { InlineClicks, InlineSource } from './ReviewController';
+import type { InlineClicks, InlineFinding, InlineSource } from './ReviewController';
 
 export interface InlineDeps {
   chats: ChatManager;
@@ -30,6 +33,7 @@ export interface InlineDeps {
   readNote: (path: string) => Promise<string>;
   /** Reveal the sidebar with this proposal's rebase panel open. */
   showProposal: (proposalId: string) => void;
+  notice?: (message: string) => void;
 }
 
 const pendingEdits = (deps: InlineDeps): EditProposal[] =>
@@ -57,9 +61,36 @@ export function inlineSource(deps: InlineDeps): InlineSource {
       const p = shown(path).find((q) => deps.review.stale.has(q.id));
       if (p) deps.showProposal(p.id);
     },
+    suggestFix: (setId, findingId) => {
+      const set = deps.chats.session.chat.findings?.[setId];
+      const f = set?.findings.find((x) => x.id === findingId);
+      if (set && f && !deps.chats.session.send(suggestFixMessage(set, f))) deps.notice?.('Wait for the current reply to finish, or stop it.');
+    },
+    dismissFinding: (setId, findingId) => deps.chats.session.dismissFinding(setId, findingId),
+  };
+  // Findings are highlighted in every display mode: they are not edits.
+  const findings = (path: string, text: string): InlineFinding[] => {
+    const sets = Object.values(deps.chats.session.chat.findings ?? {}).filter((s) => s.path === path);
+    if (sets.length === 0) return [];
+    const byId = new Map(sets.flatMap((s) => s.findings.map((f) => [f.id, f] as const)));
+    return findingMarks(text, sets).map((m) => {
+      const f = byId.get(m.findingId)!;
+      return {
+        setId: m.setId,
+        findingId: m.findingId,
+        from: m.from,
+        to: m.to,
+        tone: findingTone(f.kind, f.verdict),
+        kind: f.kind,
+        ...(f.verdict ? { verdict: f.verdict } : {}),
+        explanation: f.explanation,
+        sources: f.sources.map((s) => ({ url: s.url, link: s.known && normaliseUrl(s.url) === s.url })),
+      };
+    });
   };
   return {
     marks: (path, text) => inlineMarks(text, shown(path)),
+    findings,
     pill: (path) => {
       const ps = shown(path);
       const pending = ps.reduce((n, p) => n + p.hunks.filter((h) => h.status === 'pending').length, 0);

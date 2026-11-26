@@ -4,7 +4,7 @@
 /** The sidebar's three zones (DESIGN.md § UI): header, conversation, composer. */
 
 import { Menu } from 'obsidian';
-import { type ChangeEvent, type KeyboardEvent, type MouseEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { type ChangeEvent, type KeyboardEvent, type MouseEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChatSummary } from '../../core/chat/history';
 import type { ChatManager } from '../../core/chat/manager';
 import { type AssistantMessage, type Chat, type ToolRound, displayModeOf } from '../../core/chat/types';
@@ -16,6 +16,11 @@ import type { ChatSession } from '../../core/chat/session';
 import { ContextBar, type ContextUi } from './ContextBar';
 import { ProposalCard, type ReviewUi } from './Review';
 import { ApprovalCard } from './Approval';
+import { FindingsCard, type FindingsUi } from './Findings';
+import type { PresetLibrary } from '../../core/presets/library';
+import type { Preset } from '../../core/presets/preset';
+import { parseSlash } from '../../core/presets/run';
+import type { PresetStarter } from '../presets';
 import { Icon, IconButton } from './Icon';
 import { SafeMarkdown } from './SafeMarkdown';
 
@@ -30,6 +35,23 @@ export interface SidebarProps {
   searchConfigured?: () => boolean;
   /** Reviewing proposed edits and notes. */
   review?: ReviewUi;
+  /** Presets and their findings. */
+  presets?: PresetsUi;
+}
+
+export interface PresetsUi {
+  library: PresetLibrary;
+  starter: PresetStarter;
+  findings: FindingsUi;
+}
+
+/** The presets that can run, kept current with the library. */
+function useRunnable(presets: PresetsUi | undefined): readonly Preset[] {
+  const noop = useCallback(() => () => undefined, []);
+  const zero = useCallback(() => 0, []);
+  const version = useSyncExternalStore(presets?.library.subscribe ?? noop, presets?.library.version ?? zero);
+  // The library changes only with its version.
+  return useMemo(() => presets?.library.runnable() ?? [], [presets, version]);
 }
 
 /** The model's capabilities (null while unknown). */
@@ -52,11 +74,13 @@ function useCapabilities(providers: readonly ChatProvider[], model: ModelRef | n
   return caps;
 }
 
-export function Sidebar({ manager, providers, clearAllChats, context, searchConfigured, review }: SidebarProps) {
+export function Sidebar({ manager, providers, clearAllChats, context, searchConfigured, review, presets }: SidebarProps) {
   const { chat, busy } = useSyncExternalStore(manager.subscribe, manager.snapshot);
   const [historyOpen, setHistoryOpen] = useState(false);
   const caps = useCapabilities(providers, chat.model);
   const window = caps?.contextWindow ?? null;
+  const runnable = useRunnable(presets);
+  const start = presets ? (p: Preset, typed = '') => presets.starter.start(p, typed) : undefined;
 
   return (
     <div
@@ -92,15 +116,32 @@ export function Sidebar({ manager, providers, clearAllChats, context, searchConf
           busy={busy}
           session={manager.session}
           {...(review ? { review } : {})}
+          {...(presets ? { findings: presets.findings } : {})}
+          samples={start ? SAMPLES.flatMap((x) => {
+            const p = runnable.find((r) => r.id === x.id);
+            return p ? [{ label: x.label, icon: p.icon, run: () => void start(p) }] : [];
+          }) : []}
           onRegenerate={() => manager.session.regenerate()}
           onApprove={(id, ok, items) => manager.session.answerApproval(id, ok, items)}
         />
       )}
       {context && <ContextBar ui={context} chat={chat} window={window} images={caps?.images ?? null} calibration={manager.session.calibration} />}
+      {start && runnable.length > 0 && (
+        <PresetRow presets={runnable} busy={busy} starter={presets!.starter} chatKey={`${chat.id}:${chat.toolsDisabled === true}:${chat.model?.model ?? ''}:${searchConfigured?.() ?? false}`} />
+      )}
       <Composer
         busy={busy}
-        canSend={chat.model !== null}
-        onSend={(text) => manager.session.send(text)}
+        canSend={chat.model !== null || runnable.some((p) => p.model)}
+        presets={runnable}
+        onSend={(text) => {
+          // "/proofread focus on the intro": run that preset, with the rest as extra instructions.
+          const slash = start ? parseSlash(text, runnable) : null;
+          if (slash) {
+            void start!(slash.preset, slash.rest);
+            return true;
+          }
+          return manager.session.send(text);
+        }}
         onStop={() => manager.session.stop()}
         {...(context ? { onMention: (done: () => void) => context.pickNote(done) } : {})}
       />
@@ -221,17 +262,28 @@ function Header(props: {
 // ---------------------------------------------------------------------------
 // Conversation
 
+/** The empty chat's sample actions: the built-ins, if they can run. */
+const SAMPLES = [
+  { id: 'proofread', label: 'Proofread this note' },
+  { id: 'garden-paths', label: 'Find garden-path sentences' },
+  { id: 'fact-check', label: 'Fact-check this note' },
+];
+
 function Conversation(props: {
   chat: Chat;
   busy: boolean;
   session: ChatSession;
   review?: ReviewUi;
+  findings?: FindingsUi;
+  samples: ReadonlyArray<{ label: string; icon: string; run: () => void }>;
   onRegenerate: () => void;
   onApprove: (id: string, ok: boolean, items?: readonly string[]) => void;
 }) {
-  const { chat, busy, session, review, onRegenerate, onApprove } = props;
+  const { chat, busy, session, review, findings, onRegenerate, onApprove } = props;
   const mode = review ? displayModeOf(chat, review.defaultMode()) : 'sidebar';
-  const card = (id: string) => (review ? <ProposalCard key={id} proposal={chat.proposals?.[id]} session={session} ui={review} mode={mode} /> : null);
+  const proposalCard = (id: string) => (review ? <ProposalCard key={id} proposal={chat.proposals?.[id]} session={session} ui={review} mode={mode} /> : null);
+  const findingsCard = (id: string) => (findings ? <FindingsCard key={id} set={chat.findings?.[id]} session={session} ui={findings} busy={busy} /> : null);
+  const card = { proposal: proposalCard, findings: findingsCard };
   const ref = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -248,7 +300,17 @@ function Conversation(props: {
   if (chat.messages.length === 0) {
     return (
       <div className="lektor-conversation lektor-empty">
-        <p>{chat.model ? 'Ask anything.' : 'Choose a model above to start.'}</p>
+        <p>{chat.model ? 'Ask anything, or:' : 'Choose a model above to start.'}</p>
+        {chat.model && props.samples.length > 0 && (
+          <div className="lektor-samples">
+            {props.samples.map((x) => (
+              <button key={x.label} type="button" className="lektor-sample" onClick={x.run}>
+                <Icon name={x.icon} />
+                <span>{x.label}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -259,6 +321,12 @@ function Conversation(props: {
       {chat.messages.map((m, i) =>
         m.role === 'user' ? (
           <div key={m.id} className="lektor-message lektor-user">
+            {m.preset && (
+              <span className="lektor-preset-badge" title={`Preset: ${m.preset.name}`}>
+                <Icon name={m.preset.icon} />
+                {m.preset.name}
+              </span>
+            )}
             {m.content}
           </div>
         ) : (
@@ -274,7 +342,7 @@ function Reply(props: {
   canRegenerate: boolean;
   onRegenerate: () => void;
   onApprove: (id: string, ok: boolean, items?: readonly string[]) => void;
-  card: (proposalId: string) => ReactNode;
+  card: Cards;
 }) {
   const { message: m, canRegenerate, onRegenerate, onApprove, card } = props;
   const streaming = m.status === 'streaming';
@@ -292,7 +360,8 @@ function Reply(props: {
       ))}
       {m.approval && <ApprovalCard approval={m.approval} onAnswer={onApprove} />}
       {m.content !== '' && <SafeMarkdown text={m.content} />}
-      {(m.fencedProposals ?? []).map(card)}
+      {(m.fencedProposals ?? []).map(card.proposal)}
+      {(m.fencedFindings ?? []).map(card.findings)}
       {m.notice && <div className="lektor-note">{m.notice}</div>}
       {streaming && m.content === '' && m.reasoning === '' && steps.length === 0 && <div className="lektor-pending" aria-label="Waiting for the model">…</div>}
       {m.status === 'stopped' && <div className="lektor-note">Stopped.</div>}
@@ -307,8 +376,14 @@ function Reply(props: {
   );
 }
 
+/** Cards that appear where the model made them: proposals and findings, by id. */
+interface Cards {
+  proposal: (id: string) => ReactNode;
+  findings: (id: string) => ReactNode;
+}
+
 /** One tool round: what the model said, then one line for its calls (expandable). */
-function ToolRoundView({ round, card }: { round: ToolRound; card: (proposalId: string) => ReactNode }) {
+function ToolRoundView({ round, card }: { round: ToolRound; card: Cards }) {
   const searches = round.calls.filter((c) => c.name === 'web_search');
   const fetches = round.calls.filter((c) => c.name === 'fetch_page');
   const results = searches.reduce((t, c) => t + (c.result?.urls?.length ?? 0), 0);
@@ -326,12 +401,17 @@ function ToolRoundView({ round, card }: { round: ToolRound; card: (proposalId: s
   if (madeProposals > 0) parts.push(madeProposals === 1 ? 'Proposed changes' : `Proposed ${madeProposals} sets of changes`);
   const failedProposals = proposals.filter((c) => c.result && !c.result.ok).length;
   if (failedProposals > 0) parts.push(failedProposals === 1 ? 'A proposal was refused' : `${failedProposals} proposals were refused`);
+  const reports = round.calls.filter((c) => c.name === 'report_findings');
+  for (const c of reports) {
+    if (c.result?.ok) parts.push(`Reported ${c.result.summary}`);
+    else if (c.result) parts.push('Findings could not be placed');
+  }
   const requests = round.calls.filter((c) => c.name === 'request_context');
   for (const c of requests) {
     if (c.result?.ok) parts.push(`Asked for context: ${c.result.summary}`);
     else if (c.result) parts.push('A context request failed');
   }
-  const others = round.calls.length - searches.length - fetches.length - proposals.length - requests.length;
+  const others = round.calls.length - searches.length - fetches.length - proposals.length - requests.length - reports.length;
   if (others > 0) parts.push(`${others} other tool ${others === 1 ? 'call' : 'calls'}`);
   if (round.calls.some((c) => c.result?.limit)) parts.push('limit reached');
   if (round.calls.some((c) => !c.result)) parts.push('working…');
@@ -358,7 +438,8 @@ function ToolRoundView({ round, card }: { round: ToolRound; card: (proposalId: s
           ))}
         </ul>
       </details>
-      {round.calls.flatMap((c) => (c.result?.proposalId ? [card(c.result.proposalId)] : []))}
+      {round.calls.flatMap((c) => (c.result?.proposalId ? [card.proposal(c.result.proposalId)] : []))}
+      {round.calls.flatMap((c) => (c.result?.findingsId ? [card.findings(c.result.findingsId)] : []))}
     </>
   );
 }
@@ -409,18 +490,68 @@ function HistoryPanel(props: { manager: ChatManager; currentId: string; onOpened
 }
 
 // ---------------------------------------------------------------------------
+// Presets
+
+/** The preset buttons above the text box: icon and name (icon only when the sidebar is narrow). */
+function PresetRow(props: { presets: readonly Preset[]; busy: boolean; starter: PresetStarter; chatKey: string }) {
+  const { presets, busy, starter, chatKey } = props;
+  // Presets that need web search when none is available are marked, and ask before they run.
+  const [problems, setProblems] = useState<ReadonlyMap<string, string>>(new Map());
+  useEffect(() => {
+    let alive = true;
+    void Promise.all(presets.map(async (p) => [p.id, await starter.searchProblem(p)] as const)).then((list) => {
+      if (alive) setProblems(new Map(list.filter((x): x is readonly [string, string] => x[1] !== null)));
+    });
+    return () => {
+      alive = false;
+    };
+  }, [presets, starter, chatKey]);
+  return (
+    <div className="lektor-preset-row">
+      {presets.map((p) => {
+        const problem = problems.get(p.id);
+        return (
+          <button
+            key={p.id}
+            type="button"
+            className={`lektor-preset clickable-icon${problem ? ' is-warn' : ''}`}
+            aria-label={`${p.name} (/${p.id})${problem ? `. ${problem}` : ''}`}
+            data-tooltip-position="top"
+            disabled={busy}
+            onClick={() => void starter.start(p)}
+          >
+            <Icon name={p.icon} />
+            <span className="lektor-preset-name">{p.name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Composer
 
 function Composer(props: {
   busy: boolean;
   canSend: boolean;
+  /** For "/" commands: the presets that can run. */
+  presets: readonly Preset[];
   onSend: (text: string) => boolean;
   onStop: () => void;
   /** Typing "@" at the start of a word: open the note picker; `picked` removes the "@". */
   onMention?: (picked: () => void) => void;
 }) {
-  const { busy, canSend, onSend, onStop, onMention } = props;
+  const { busy, canSend, presets, onSend, onStop, onMention } = props;
   const [text, setText] = useState('');
+  const input = useRef<HTMLTextAreaElement>(null);
+  // "/" at the start: offer the presets whose command starts with what was typed.
+  const slash = /^\/([a-z0-9_-]*)$/.exec(text);
+  const suggestions = slash ? presets.filter((p) => p.id.startsWith(slash[1]!)) : [];
+  const complete = (p: Preset) => {
+    setText(`/${p.id} `);
+    input.current?.focus();
+  };
   const onChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     const caret = e.target.selectionStart;
@@ -432,6 +563,11 @@ function Composer(props: {
     if (onSend(text)) setText('');
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Tab' && suggestions.length > 0) {
+      e.preventDefault();
+      complete(suggestions[0]!);
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       if (!busy) submit();
@@ -439,11 +575,23 @@ function Composer(props: {
   };
   return (
     <div className="lektor-composer">
+      {suggestions.length > 0 && (
+        <div className="lektor-slash" role="listbox" aria-label="Presets">
+          {suggestions.map((p) => (
+            <button key={p.id} type="button" role="option" aria-selected={false} className="lektor-slash-item" onClick={() => complete(p)}>
+              <Icon name={p.icon} />
+              <span className="lektor-slash-command">/{p.id}</span>
+              <span className="lektor-slash-name">{p.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <textarea
+        ref={input}
         className="lektor-input"
         value={text}
         rows={3}
-        placeholder={canSend ? 'Message (Enter to send, Shift+Enter for a new line)' : 'Choose a model first'}
+        placeholder={canSend ? (presets.length > 0 ? 'Message, or / for a preset (Enter to send)' : 'Message (Enter to send, Shift+Enter for a new line)') : 'Choose a model first'}
         disabled={!canSend}
         onChange={onChange}
         onKeyDown={onKeyDown}

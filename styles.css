@@ -14,6 +14,8 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* Preset buttons drop their names when the sidebar is narrow. */
+  container-type: inline-size;
 }
 
 /* Header */
@@ -591,6 +593,7 @@
 /* Composer */
 
 .lektor-composer {
+  position: relative;
   display: flex;
   align-items: flex-end;
   gap: var(--size-4-1);
@@ -724,4 +727,232 @@
   padding: 0 var(--size-4-2);
   height: auto;
   font-size: var(--font-ui-smaller);
+}
+
+/* Presets */
+
+.lektor-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-1);
+  padding: var(--size-4-1) var(--size-4-2) 0;
+}
+
+.lektor-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  width: auto;
+  height: auto;
+  padding: var(--size-2-2) var(--size-4-2);
+  font-size: var(--font-ui-small);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+}
+
+.lektor-preset.is-warn {
+  border-color: var(--color-orange);
+  color: var(--color-orange);
+}
+
+@container (max-width: 320px) {
+  .lektor-preset-name {
+    display: none;
+  }
+}
+
+.lektor-preset-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  margin-right: var(--size-4-1);
+  padding: 0 var(--size-4-1);
+  border-radius: var(--radius-s);
+  background: var(--background-modifier-hover);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+}
+
+.lektor-preset-badge svg {
+  width: var(--icon-xs);
+  height: var(--icon-xs);
+}
+
+.lektor-samples {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  align-items: stretch;
+}
+
+.lektor-sample {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  justify-content: flex-start;
+}
+
+.lektor-slash {
+  position: absolute;
+  bottom: 100%;
+  left: var(--size-4-2);
+  right: var(--size-4-2);
+  z-index: var(--layer-popover);
+  display: flex;
+  flex-direction: column;
+  padding: var(--size-2-2);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-s);
+}
+
+.lektor-slash-item {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  justify-content: flex-start;
+  box-shadow: none;
+  background: transparent;
+}
+
+.lektor-slash-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.lektor-slash-command {
+  font-family: var(--font-monospace);
+}
+
+.lektor-slash-name {
+  color: var(--text-muted);
+}
+
+/* Findings: colour by kind, or by verdict for fact checks */
+
+:is(.lektor-finding, .lektor-finding-row, .lektor-finding-card).is-spelling { --lektor-tone: var(--color-red-rgb); }
+:is(.lektor-finding, .lektor-finding-row, .lektor-finding-card).is-garden { --lektor-tone: var(--color-purple-rgb); }
+:is(.lektor-finding, .lektor-finding-row, .lektor-finding-card).is-wrong { --lektor-tone: var(--color-red-rgb); }
+:is(.lektor-finding, .lektor-finding-row, .lektor-finding-card).is-doubtful { --lektor-tone: var(--color-orange-rgb); }
+:is(.lektor-finding, .lektor-finding-row, .lektor-finding-card).is-unverified { --lektor-tone: var(--color-yellow-rgb); }
+:is(.lektor-finding, .lektor-finding-row, .lektor-finding-card).is-correct { --lektor-tone: var(--color-green-rgb); }
+:is(.lektor-finding, .lektor-finding-row, .lektor-finding-card).is-other { --lektor-tone: var(--color-blue-rgb); }
+
+.lektor-finding {
+  text-decoration: underline dotted rgb(var(--lektor-tone));
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  background: rgba(var(--lektor-tone), 0.08);
+}
+
+.lektor-findings {
+  margin: var(--size-4-2) 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+}
+
+.lektor-findings-head {
+  padding: var(--size-4-1) var(--size-4-2);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  background: var(--background-secondary);
+}
+
+.lektor-findings-dismissed {
+  color: var(--text-faint);
+}
+
+.lektor-finding-row,
+.lektor-finding-card {
+  border-left: 3px solid rgb(var(--lektor-tone));
+  padding: var(--size-4-2);
+}
+
+.lektor-finding-row + .lektor-finding-row {
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.lektor-finding-card {
+  max-width: 360px;
+  font-size: var(--font-ui-small);
+  background: var(--background-primary);
+}
+
+.lektor-finding-meta {
+  display: flex;
+  gap: var(--size-4-1);
+  margin-bottom: var(--size-2-2);
+}
+
+.lektor-finding-kind,
+.lektor-finding-verdict {
+  padding: 0 var(--size-4-1);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  background: rgba(var(--lektor-tone), 0.15);
+}
+
+.lektor-finding-verdict {
+  font-weight: var(--font-semibold);
+}
+
+.lektor-finding-quote {
+  display: block;
+  width: 100%;
+  height: auto;
+  padding: 0;
+  text-align: left;
+  white-space: normal;
+  font-style: italic;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.lektor-finding-quote:hover {
+  text-decoration: underline;
+}
+
+.lektor-finding-explanation {
+  margin-top: var(--size-2-2);
+}
+
+.lektor-finding-sources {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
+.lektor-source-unknown {
+  color: var(--text-faint);
+}
+
+.lektor-finding-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--size-4-1);
+  margin-top: var(--size-4-1);
+}
+
+/* Preset settings */
+
+.lektor-preset-settings-icon {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: var(--size-4-1);
+}
+
+.lektor-preset-modal .lektor-preset-prompt {
+  width: 100%;
+  min-height: 12em;
+  font-family: var(--font-monospace);
+  resize: vertical;
+}
+
+.lektor-preset-prompt-row {
+  border-bottom: none;
 }
