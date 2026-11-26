@@ -31,8 +31,10 @@ describe('prepareContext, recordSent, restoreContext', () => {
     const { index } = vault([['a.md', 'alpha']]);
     expect(await prepareContext({ followActive: true, chips: [] }, index)).toEqual({
       message: null,
+      images: [],
       tokens: 0,
-      manifest: { notes: [], selections: [], backlinkLists: 0, excluded: 0 },
+      manifest: { notes: [], selections: [], attachments: [], backlinkLists: 0, excluded: 0 },
+      skipped: [],
       urls: [],
     });
   });

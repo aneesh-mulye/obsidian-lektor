@@ -7,6 +7,7 @@
  * the model is sent (INVARIANTS.md X2).
  */
 
+import type { AttachmentMode } from '../settings';
 import type { ContextIndex } from './ContextIndex';
 
 export type Depth = 0 | 1 | 2 | 3;
@@ -48,12 +49,35 @@ export interface SelectionChip {
   readonly text?: string;
 }
 
-export type Chip = NoteChip | FolderChip | SelectionChip;
+/** A file that is not a note: an image, a text file (DESIGN.md § Embeds and attachments). */
+export interface AttachmentChip {
+  readonly kind: 'attachment';
+  readonly id: string;
+  readonly path: string;
+  /** Hash of the file's bytes when it was last sent. */
+  readonly lastHash?: string;
+  /** The file changed since it was last sent (shown after reopening a chat). */
+  readonly changed?: boolean;
+}
+
+export type Chip = NoteChip | FolderChip | SelectionChip | AttachmentChip;
 
 export interface ContextState {
   /** Whether a chip follows the active note. */
   readonly followActive: boolean;
   readonly chips: readonly Chip[];
+  /** This chat's attachment mode (the paperclip); absent means the setting's. */
+  readonly attachmentMode?: AttachmentMode;
+  /**
+   * Attachments the user removed: kept out of this chat until added again. Upfront mode does not
+   * bring them back, and Allowed mode does not grant them without asking.
+   */
+  readonly withheld?: readonly string[];
+}
+
+/** The chat's attachment mode, or the setting's for chats that never chose one. */
+export function attachmentModeOf(s: ContextState, fallback: AttachmentMode): AttachmentMode {
+  return s.attachmentMode ?? fallback;
 }
 
 export const EMPTY_CONTEXT: ContextState = Object.freeze({ followActive: true, chips: Object.freeze([]) });
@@ -102,12 +126,49 @@ export function addSelection(s: ContextState, index: ContextIndex, sel: Captured
   return { state: withChips(s, [...s.chips, { kind: 'selection', id: newId(), ...sel }]) };
 }
 
-/** Remove a chip. Removing the current-note chip stops the following for this chat. */
+const unwithhold = (s: ContextState, path: string): ContextState => {
+  if (!s.withheld?.includes(path)) return s;
+  const withheld = s.withheld.filter((p) => p !== path);
+  const { withheld: _w, ...rest } = s;
+  return withheld.length > 0 ? { ...rest, withheld } : rest;
+};
+
+/** Add an attachment. Adding one the user removed earlier lets it back in. */
+export function addAttachment(s: ContextState, index: ContextIndex, path: string, newId: () => string): Change {
+  if (!index.attachment(path)) return { state: s, notice: why(index, path, 'The file') };
+  const open = unwithhold(s, path);
+  if (open.chips.some((c) => c.kind === 'attachment' && c.path === path)) return { state: open };
+  return { state: withChips(open, [...open.chips, { kind: 'attachment', id: newId(), path }]) };
+}
+
+/** Keep an attachment out of this chat (removing an Upfront chip, which has no chip of its own). */
+export function withhold(s: ContextState, path: string): ContextState {
+  const chips = s.chips.filter((c) => !(c.kind === 'attachment' && c.path === path));
+  if (s.withheld?.includes(path)) return chips.length === s.chips.length ? s : withChips(s, chips);
+  return { ...withChips(s, chips), withheld: [...(s.withheld ?? []), path] };
+}
+
+/** This chat's attachment mode; undefined goes back to the setting. */
+export function setAttachmentMode(s: ContextState, mode: AttachmentMode | undefined): ContextState {
+  const { attachmentMode: _m, ...rest } = s;
+  return mode === undefined ? rest : { ...rest, attachmentMode: mode };
+}
+
+/** Items the user shared through a request_context card become chips (DESIGN.md § Model-initiated requests). */
+export function addShared(s: ContextState, index: ContextIndex, shared: { notes: readonly string[]; attachments: readonly string[] }, newId: () => string): ContextState {
+  let state = s;
+  for (const path of shared.notes) state = addNote(state, index, path, newId).state;
+  for (const path of shared.attachments) state = addAttachment(state, index, path, newId).state;
+  return state;
+}
+
+/** Remove a chip. Removing the current-note chip stops the following for this chat; removing an attachment withholds it. */
 export function removeChip(s: ContextState, id: string): ContextState {
   const chip = s.chips.find((c) => c.id === id);
   if (!chip) return s;
+  if (chip.kind === 'attachment') return withhold(s, chip.path);
   const followActive = chip.kind === 'note' && chip.current ? false : s.followActive;
-  return { followActive, chips: s.chips.filter((c) => c.id !== id) };
+  return { ...s, followActive, chips: s.chips.filter((c) => c.id !== id) };
 }
 
 function updateNote(s: ContextState, id: string, fn: (c: NoteChip) => NoteChip): ContextState {
@@ -155,7 +216,7 @@ export function setActive(s: ContextState, index: ContextIndex, active: string |
 export function revalidate(s: ContextState, index: ContextIndex): Change {
   const dropped: string[] = [];
   const chips = s.chips.filter((c) => {
-    const ok = c.kind === 'folder' ? index.hasFolder(c.path) : index.note(c.path) !== null;
+    const ok = c.kind === 'folder' ? index.hasFolder(c.path) : c.kind === 'attachment' ? index.attachment(c.path) !== null : index.note(c.path) !== null;
     if (!ok) dropped.push(c.kind === 'selection' ? `a selection from ${c.path}` : c.path);
     return ok;
   });
@@ -167,5 +228,6 @@ export function revalidate(s: ContextState, index: ContextIndex): Change {
 /** A note or folder was renamed: chips follow it. */
 export function renamePath(s: ContextState, from: string, to: string): ContextState {
   const move = (p: string) => (p === from ? to : p.startsWith(`${from}/`) ? to + p.slice(from.length) : p);
-  return withChips(s, s.chips.map((c) => ({ ...c, path: move(c.path) })));
+  const moved = withChips(s, s.chips.map((c) => ({ ...c, path: move(c.path) })));
+  return s.withheld ? { ...moved, withheld: s.withheld.map(move) } : moved;
 }

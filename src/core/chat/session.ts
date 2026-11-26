@@ -7,14 +7,15 @@
  * is never more than one live stream; a stopped reply is final.
  */
 
+import type { ModelAccepts } from '../context/attachments';
 import { type ContextManifest, type PreparedContext, recordSent, sha256 } from '../context/prepare';
 import type { ContextState } from '../context/state';
 import { MESSAGE_OVERHEAD, estimateTokens, fits, formatTokens } from '../context/tokens';
 import type { ChatMessage, ChatProvider, ChatRequest, ModelRef, ToolCall } from '../providers/types';
 import type { Proposal } from '../review/types';
 import type { DisplayMode } from '../settings';
-import type { ApprovalRequest } from '../tools/types';
-import { messagesTokens, roundMessages, titleFrom, toRequestMessages } from './transcript';
+import type { ApprovalItem, ApprovalRequest, Shared, Transient } from '../tools/types';
+import { imagesMessage, messagesTokens, roundMessages, titleFrom, toRequestMessages } from './transcript';
 import type { AssistantMessage, Chat, Clock, Message, ProviderLookup, ToolRun, ToolsDeps } from './types';
 
 /** The tool loop's limit: at most this many requests per reply; the last offers no tools (INVARIANTS.md C7). */
@@ -27,8 +28,10 @@ export interface SessionDeps {
   /** Persist the chat. Called after every user action and when a reply ends. */
   save: (chat: Chat) => Promise<void>;
   onSaveError?: (err: unknown) => void;
-  /** Build the context message for the chat's chips (INVARIANTS.md X2). Failure means nothing is sent. */
-  prepare?: (state: ContextState) => Promise<PreparedContext>;
+  /** Build the context message for the chat's chips (INVARIANTS.md X2, A1). Failure means nothing is sent. */
+  prepare?: (state: ContextState, accepts: ModelAccepts) => Promise<PreparedContext>;
+  /** Turn what the user shared through request_context into chips (INVARIANTS.md A3). */
+  share?: (state: ContextState, shared: Shared) => ContextState;
   /** Whether to keep the context text sent with each reply ("store full transcripts"). */
   storeFullTranscripts?: () => boolean;
   /** Tools for each reply (DESIGN.md § Tools framework). */
@@ -47,7 +50,7 @@ export class ChatSession {
   #saving: Promise<void> = Promise.resolve();
   /** Real ÷ estimated prompt tokens from the last finished reply (INVARIANTS.md C6). */
   #calibration = 1;
-  #approval: { id: string; resolve: (approved: boolean) => void } | null = null;
+  #approval: { id: string; resolve: (answer: boolean | readonly string[]) => void } | null = null;
   readonly #listeners = new Set<() => void>();
 
   constructor(
@@ -158,11 +161,21 @@ export class ChatSession {
       if (!live()) return;
       const window = caps.contextWindow;
       // The context is read fresh for every message; if it can't be, nothing is sent.
-      const prepared = this.deps.prepare ? await this.deps.prepare(this.#chat.context) : null;
+      const prepared = this.deps.prepare ? await this.deps.prepare(this.#chat.context, { images: caps.images }) : null;
       if (!live()) return;
 
       const transcript = toRequestMessages(history);
-      const base: ChatMessage[] = prepared?.message ? [{ role: 'system', content: prepared.message }, ...transcript] : transcript;
+      const head: ChatMessage[] = [
+        ...(prepared?.message ? [{ role: 'system' as const, content: prepared.message }] : []),
+        ...(prepared && prepared.images.length > 0 ? [imagesMessage(prepared.images)] : []),
+      ];
+      const base: ChatMessage[] = [...head, ...transcript];
+      if (prepared && prepared.skipped.length > 0) {
+        const list = prepared.skipped.map((x) => `${x.path} (${x.reason})`).join('; ');
+        this.#updateReply((r) => ({ ...r, notice: `Not sent: ${list}.` }));
+      }
+      // Shared through request_context during this reply: sent in full until the reply ends, never saved (INVARIANTS.md A4).
+      const transient = new Map<string, Transient>();
       const baseEstimate = (prepared?.tokens ?? 0) + messagesTokens(transcript, estimateTokens, MESSAGE_OVERHEAD);
       // One tool run (one budget) per user message (INVARIANTS.md T2).
       const editable = prepared ? [...new Set([...prepared.manifest.notes.map((n) => n.path), ...prepared.manifest.selections.map((x) => x.path)])] : [];
@@ -172,7 +185,7 @@ export class ChatSession {
 
       for (let round = 0; ; round++) {
         const rounds = this.#reply()?.steps ?? [];
-        const extra = roundMessages(rounds);
+        const extra = roundMessages(rounds, transient);
         const estimate = baseEstimate + messagesTokens(extra, estimateTokens, MESSAGE_OVERHEAD);
         // Every round must fit (INVARIANTS.md C6, C7).
         if (!fits(estimate, this.#calibration, window)) {
@@ -201,9 +214,22 @@ export class ChatSession {
         }));
         this.#emit();
         for (let i = 0; i < calls.length; i++) {
-          const { proposal, ...result } = await tools!.execute(calls[i]!, signal, (request) => this.#askApproval(request));
+          const { proposal, transient: sent, shared, ...stored } = await tools!.execute(calls[i]!, signal, (request) => this.#askApproval(request), {
+            choose: (request) => this.#askChoice(request),
+            context: () => this.#chat.context,
+          });
           if (!live()) return;
           if (proposal) this.#set({ ...this.#chat, proposals: { ...(this.#chat.proposals ?? {}), [proposal.id]: proposal } });
+          let result = stored;
+          if (sent) {
+            transient.set(calls[i]!.id, sent);
+            if (this.deps.storeFullTranscripts?.()) {
+              const contextHash = await sha256(sent.content);
+              this.#set({ ...this.#chat, sentContext: { ...(this.#chat.sentContext ?? {}), [contextHash]: sent.content } });
+              result = { ...stored, contextHash };
+            }
+          }
+          if (shared) this.#share(shared);
           this.#updateReply((r) => ({
             ...r,
             steps: r.steps!.map((st, k) => (k !== index ? st : { ...st, calls: st.calls.map((c, j) => (j === i ? { ...c, result } : c)) })),
@@ -304,6 +330,16 @@ export class ChatSession {
 
   /** Show an approval card on the reply and wait for the user (or Stop, which declines). */
   #askApproval(request: ApprovalRequest): Promise<boolean> {
+    return this.#ask(request).then((answer) => answer === true);
+  }
+
+  /** Show a card with a checkbox per item and wait; resolves to the ticked ids that were offered ([] for Deny or Stop). */
+  #askChoice(request: ApprovalRequest & { items: readonly ApprovalItem[] }): Promise<readonly string[]> {
+    const offered = new Set(request.items.filter((i) => i.unavailable === undefined).map((i) => i.id));
+    return this.#ask(request).then((answer) => (typeof answer === 'boolean' ? [] : answer.filter((id) => offered.has(id))));
+  }
+
+  #ask(request: ApprovalRequest): Promise<boolean | readonly string[]> {
     return new Promise((resolve) => {
       const id = this.deps.newId();
       this.#approval?.resolve(false);
@@ -313,8 +349,11 @@ export class ChatSession {
     });
   }
 
-  /** The user answered an approval card. */
-  answerApproval(id: string, approved: boolean): void {
+  /**
+   * The user answered an approval card: yes or no, or for a card with items, the ids they ticked
+   * (an empty list is a denial).
+   */
+  answerApproval(id: string, approved: boolean, items?: readonly string[]): void {
     const pending = this.#approval;
     if (pending?.id !== id) return;
     this.#approval = null;
@@ -323,7 +362,17 @@ export class ChatSession {
       return rest;
     });
     this.#emit();
-    pending.resolve(approved);
+    pending.resolve(approved ? (items ?? true) : false);
+  }
+
+  /** What the user shared becomes chips, and part of this reply's manifest (so deleting it later finds this chat). */
+  #share(shared: Shared): void {
+    if (this.deps.share) this.#set({ ...this.#chat, context: this.deps.share(this.#chat.context, shared) });
+    this.#updateReply((r) => {
+      const base: ContextManifest = r.context ?? { notes: [], selections: [], attachments: [], backlinkLists: 0, excluded: 0 };
+      const add = <T extends { path: string }>(list: readonly T[], more: readonly T[]) => [...list, ...more.filter((m) => !list.some((x) => x.path === m.path))];
+      return { ...r, context: { ...base, notes: add(base.notes, shared.manifest.notes), attachments: add(base.attachments ?? [], shared.manifest.attachments) } };
+    });
   }
 
   /** Show this chat's proposals as prose, sidebar diffs or inline marks (the header toggle). */

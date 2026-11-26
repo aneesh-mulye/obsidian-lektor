@@ -6,7 +6,7 @@ import type { ContextState } from '../context/state';
 import type { Capabilities, ChatProvider, ModelRef, ToolCall, ToolDefinition } from '../providers/types';
 import type { Proposal } from '../review/types';
 import type { DisplayMode } from '../settings';
-import type { ApprovalRequest, StepResult } from '../tools/types';
+import type { ApprovalItem, ApprovalRequest, StepResult } from '../tools/types';
 
 export type ReplyStatus = 'streaming' | 'complete' | 'stopped' | 'truncated' | 'error';
 
@@ -86,7 +86,7 @@ export function displayModeOf(chat: Chat, fallback: DisplayMode): DisplayMode {
 /** The tools available to one reply: definitions to offer, and a way to run calls. One per user message. */
 export interface ToolRun {
   definitions: ToolDefinition[];
-  execute(call: ToolCall, signal: AbortSignal, approve: (request: ApprovalRequest) => Promise<boolean>): Promise<StepResult>;
+  execute(call: ToolCall, signal: AbortSignal, approve: (request: ApprovalRequest) => Promise<boolean>, extra?: ToolExtras): Promise<StepResult>;
   /**
    * For models without tool calling: instructions for proposing edits in fenced
    * `lektor-edit` blocks, and a way to turn a finished reply's blocks into proposals.
@@ -97,6 +97,14 @@ export interface ToolRun {
   };
   /** A system instruction for this reply (Prose mode: describe changes in words). */
   instructions?: string;
+}
+
+/** What a reply's tools can use beyond a yes/no card (request_context). */
+export interface ToolExtras {
+  /** A card with checkboxes; resolves to the ids the user ticked ([] for Deny or Stop). */
+  choose?: (request: ApprovalRequest & { items: readonly ApprovalItem[] }) => Promise<readonly string[]>;
+  /** The chat's chips as they are now (they grow as the user shares more during the reply). */
+  context?: () => ContextState;
 }
 
 export interface ToolsDeps {

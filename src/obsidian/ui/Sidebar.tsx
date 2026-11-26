@@ -15,6 +15,7 @@ import type { ModelRef } from '../../core/providers/types';
 import type { ChatSession } from '../../core/chat/session';
 import { ContextBar, type ContextUi } from './ContextBar';
 import { ProposalCard, type ReviewUi } from './Review';
+import { ApprovalCard } from './Approval';
 import { Icon, IconButton } from './Icon';
 import { SafeMarkdown } from './SafeMarkdown';
 
@@ -92,10 +93,10 @@ export function Sidebar({ manager, providers, clearAllChats, context, searchConf
           session={manager.session}
           {...(review ? { review } : {})}
           onRegenerate={() => manager.session.regenerate()}
-          onApprove={(id, ok) => manager.session.answerApproval(id, ok)}
+          onApprove={(id, ok, items) => manager.session.answerApproval(id, ok, items)}
         />
       )}
-      {context && <ContextBar ui={context} chat={chat} window={window} calibration={manager.session.calibration} />}
+      {context && <ContextBar ui={context} chat={chat} window={window} images={caps?.images ?? null} calibration={manager.session.calibration} />}
       <Composer
         busy={busy}
         canSend={chat.model !== null}
@@ -226,7 +227,7 @@ function Conversation(props: {
   session: ChatSession;
   review?: ReviewUi;
   onRegenerate: () => void;
-  onApprove: (id: string, ok: boolean) => void;
+  onApprove: (id: string, ok: boolean, items?: readonly string[]) => void;
 }) {
   const { chat, busy, session, review, onRegenerate, onApprove } = props;
   const mode = review ? displayModeOf(chat, review.defaultMode()) : 'sidebar';
@@ -272,7 +273,7 @@ function Reply(props: {
   message: AssistantMessage;
   canRegenerate: boolean;
   onRegenerate: () => void;
-  onApprove: (id: string, ok: boolean) => void;
+  onApprove: (id: string, ok: boolean, items?: readonly string[]) => void;
   card: (proposalId: string) => ReactNode;
 }) {
   const { message: m, canRegenerate, onRegenerate, onApprove, card } = props;
@@ -289,20 +290,7 @@ function Reply(props: {
       {steps.map((round, k) => (
         <ToolRoundView key={k} round={round} card={card} />
       ))}
-      {m.approval && (
-        <div className="lektor-approval" role="group" aria-label={m.approval.title}>
-          <div className="lektor-approval-title">{m.approval.title}</div>
-          <code className="lektor-approval-detail">{m.approval.detail}</code>
-          <div className="lektor-approval-actions">
-            <button type="button" className="mod-cta" onClick={() => onApprove(m.approval!.id, true)}>
-              Allow
-            </button>
-            <button type="button" onClick={() => onApprove(m.approval!.id, false)}>
-              Deny
-            </button>
-          </div>
-        </div>
-      )}
+      {m.approval && <ApprovalCard approval={m.approval} onAnswer={onApprove} />}
       {m.content !== '' && <SafeMarkdown text={m.content} />}
       {(m.fencedProposals ?? []).map(card)}
       {m.notice && <div className="lektor-note">{m.notice}</div>}
@@ -338,7 +326,12 @@ function ToolRoundView({ round, card }: { round: ToolRound; card: (proposalId: s
   if (madeProposals > 0) parts.push(madeProposals === 1 ? 'Proposed changes' : `Proposed ${madeProposals} sets of changes`);
   const failedProposals = proposals.filter((c) => c.result && !c.result.ok).length;
   if (failedProposals > 0) parts.push(failedProposals === 1 ? 'A proposal was refused' : `${failedProposals} proposals were refused`);
-  const others = round.calls.length - searches.length - fetches.length - proposals.length;
+  const requests = round.calls.filter((c) => c.name === 'request_context');
+  for (const c of requests) {
+    if (c.result?.ok) parts.push(`Asked for context: ${c.result.summary}`);
+    else if (c.result) parts.push('A context request failed');
+  }
+  const others = round.calls.length - searches.length - fetches.length - proposals.length - requests.length;
   if (others > 0) parts.push(`${others} other tool ${others === 1 ? 'call' : 'calls'}`);
   if (round.calls.some((c) => c.result?.limit)) parts.push('limit reached');
   if (round.calls.some((c) => !c.result)) parts.push('working…');

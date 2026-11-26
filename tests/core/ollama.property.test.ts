@@ -203,6 +203,12 @@ const message: fc.Arbitrary<ChatMessage> = fc.oneof(
   fc.record({ role: fc.constantFrom('user' as const, 'assistant' as const, 'system' as const), content: fc.string() }),
   fc.record({ role: fc.constant('assistant' as const), content: fc.string(), toolCalls: fc.array(call, { minLength: 1, maxLength: 3 }) }),
   fc.record({ role: fc.constant('tool' as const), content: fc.string(), toolName: fc.constantFrom('web_search', 'fetch_page'), toolCallId: fc.string() }),
+  // Milestone 7: images on user messages (base64), sometimes an empty list.
+  fc.record({
+    role: fc.constant('user' as const),
+    content: fc.string(),
+    images: fc.array(fc.record({ mime: fc.constantFrom('image/png', 'image/jpeg'), data: fc.base64String({ minLength: 4, maxLength: 24 }), tokens: fc.nat() }), { maxLength: 3 }),
+  }),
 );
 const tool = fc.record({ name: fc.constantFrom('web_search', 'fetch_page'), description: fc.string(), parameters: fc.constant({ type: 'object', properties: {} }) });
 
@@ -212,6 +218,8 @@ function ollamaMessage(m: ChatMessage): unknown {
     return { role: 'assistant', content: m.content, tool_calls: m.toolCalls.map((c) => ({ function: { name: c.name, arguments: c.arguments } })) };
   }
   if (m.role === 'tool') return { role: 'tool', content: m.content, tool_name: m.toolName };
+  // Images only when there are some: base64, in order, and nothing else about them.
+  if (m.role === 'user' && m.images && m.images.length > 0) return { role: 'user', content: m.content, images: m.images.map((i) => i.data) };
   return { role: m.role, content: m.content };
 }
 const baseUrl = fc.webUrl({ withQueryParameters: false, withFragments: false }).map((u) => u.replace(/\/+$/, ''));

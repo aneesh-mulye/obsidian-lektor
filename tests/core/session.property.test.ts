@@ -301,7 +301,7 @@ function setup(window = 4096): { model: Model; real: Real } {
       }
       const t = real.contextTokens;
       const manifest = { notes: [], selections: [], backlinkLists: 0, excluded: 0 };
-      return Promise.resolve(t > 0 ? { message: contextMessage(t), tokens: t, manifest, urls: [] } : { message: null, tokens: 0, manifest, urls: [] });
+      return Promise.resolve(t > 0 ? { message: contextMessage(t), images: [], tokens: t, manifest, skipped: [], urls: [] } : { message: null, images: [], tokens: 0, manifest, skipped: [], urls: [] });
     },
     providers: { get: (id) => (id === 'fake' ? provider : undefined) },
     clock: { now: () => ++n },

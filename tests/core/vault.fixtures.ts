@@ -4,7 +4,7 @@
 /** The random vault shared by the context tests (INVARIANTS.md § Milestone 3). */
 
 import fc from 'fast-check';
-import type { RawNote, RawVault } from '../../src/core/context/vault';
+import type { RawFile, RawNote, RawVault } from '../../src/core/context/vault';
 
 export interface FakeNote {
   path: string;
@@ -16,6 +16,8 @@ export interface FakeNote {
 export interface VaultSpec {
   notes: FakeNote[];
   attachments: string[];
+  /** Attachment bytes by path (empty when absent). */
+  bytes?: Record<string, Uint8Array>;
   patterns: string[];
   obsidianFilters: string[];
   respectObsidian: boolean;
@@ -68,10 +70,18 @@ export class FakeRawVault implements RawVault {
   notes(): RawNote[] {
     return this.spec.notes.map((n) => ({ path: n.path, size: enc.encode(n.content).length }));
   }
+  files(): RawFile[] {
+    return this.spec.attachments.map((path) => ({ path, size: this.spec.bytes?.[path]?.length ?? 0 }));
+  }
+  readBytes(path: string): Promise<Uint8Array> {
+    this.reads.push(path);
+    if (!this.spec.attachments.includes(path)) return Promise.reject(new Error(`ENOENT ${path}`));
+    return Promise.resolve(new Uint8Array(this.spec.bytes?.[path] ?? new Uint8Array()));
+  }
   folders(): string[] {
     const set = new Set<string>();
-    for (const n of this.spec.notes) {
-      const parts = n.path.split('/');
+    for (const n of [...this.spec.notes.map((x) => x.path), ...this.spec.attachments]) {
+      const parts = n.split('/');
       for (let i = 1; i < parts.length; i++) set.add(parts.slice(0, i).join('/'));
     }
     return [...set].sort();

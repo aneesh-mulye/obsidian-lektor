@@ -13,6 +13,7 @@ import { ContextBroker } from './obsidian/ContextBroker';
 import { FetchHttpClient, RequestUrlHttpClient } from './obsidian/Http';
 import { readabilityExtractor } from './obsidian/HtmlExtractor';
 import { ToolRegistry } from './core/tools/registry';
+import { requestContextTool } from './core/tools/context';
 import { toolRuns } from './core/tools/run';
 import { searchProvider } from './core/tools/search';
 import { type SearchSetup, fetchPageTool, webSearchTool } from './core/tools/web';
@@ -24,7 +25,7 @@ import { ReviewController } from './obsidian/ReviewController';
 import { inlineSource, watchStaleness } from './obsidian/InlineReview';
 import { focusProposal } from './obsidian/ui/Review';
 import { LektorView, VIEW_TYPE_LEKTOR } from './obsidian/LektorView';
-import { FolderPicker, NotePicker } from './obsidian/Pickers';
+import { AttachmentPicker, FolderPicker, NotePicker } from './obsidian/Pickers';
 import { PluginStorage } from './obsidian/PluginStorage';
 import { LektorSettingTab } from './obsidian/SettingsTab';
 import type { ContextUi } from './obsidian/ui/ContextBar';
@@ -99,12 +100,14 @@ export default class LektorPlugin extends Plugin {
     registry.register(fetchPageTool(toolHttp, readabilityExtractor, () => settings().tools.fetchMaxTokens));
     registry.register(proposeEditTool(reviewDeps));
     registry.register(proposeNoteTool(reviewDeps));
+    registry.register(requestContextTool({ index: this.broker.index, maxDepth: () => settings().context.maxLinkDepth as Depth }));
     const tools = toolRuns(registry, {
       webNames: () => [...(settings().tools.searchProvider !== 'none' ? ['web_search'] : []), 'fetch_page'],
       // Prose mode chats get no edit tools (DESIGN.md § Display modes; toolRuns checks the chat's mode).
       reviewNames: () => ['propose_edit', 'propose_note'],
       displayMode: () => settings().review.defaultDisplayMode,
       limits: () => ({ searches: settings().tools.searchesPerMessage, fetches: settings().tools.fetchesPerMessage }),
+      attachmentMode: () => settings().context.attachmentMode,
       fenced: (editable, model) => fencedEdits(reviewDeps, editable, model),
     });
 
@@ -128,6 +131,7 @@ export default class LektorPlugin extends Plugin {
         newId: () => crypto.randomUUID(),
         maxDepth: () => settings().context.maxLinkDepth as Depth,
         onNotice: notice,
+        attachmentMode: () => settings().context.attachmentMode,
       },
       storeFullTranscripts: () => settings().privacy.storeFullTranscripts,
       defaultDisplayMode: () => settings().review.defaultDisplayMode,
@@ -197,6 +201,7 @@ export default class LektorPlugin extends Plugin {
         picked?.();
       }).open();
     const pickFolder = () => new FolderPicker(this.app, this.broker.index.folders(), (f) => context.addFolder(f, false)).open();
+    const pickFile = () => new AttachmentPicker(this.app, this.broker.index.attachments(), (f) => context.addAttachment(f.path)).open();
 
     const contextUi: ContextUi = {
       controller: context,
@@ -210,10 +215,12 @@ export default class LektorPlugin extends Plugin {
       },
       pickNote,
       pickFolder,
+      pickFile,
       addSelection: () => void addSelection(),
       drop: () => {
         const dropped = this.broker.dropped();
         for (const n of dropped.notes) context.addNote(n);
+        for (const a of dropped.attachments) context.addAttachment(a);
         for (const f of dropped.folders) context.addFolder(f, false);
         if (dropped.excluded > 0) notice(`${dropped.excluded} excluded item${dropped.excluded === 1 ? ' was' : 's were'} not added.`);
       },
@@ -268,6 +275,7 @@ export default class LektorPlugin extends Plugin {
     this.addCommand({ id: 'add-current-note', name: 'Add current note to context', callback: () => context.addActiveNote() });
     this.addCommand({ id: 'add-note', name: 'Add note to context…', callback: () => pickNote() });
     this.addCommand({ id: 'add-folder', name: 'Add folder to context…', callback: pickFolder });
+    this.addCommand({ id: 'add-attachment', name: 'Add attachment to context…', callback: pickFile });
     const showHistory = (path: string | null) => {
       if (path === null) notice('Open a note first.');
       else new EditHistoryModal(this.app, path, editLog, review).open();

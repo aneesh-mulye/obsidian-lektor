@@ -10,13 +10,20 @@ export interface RawNote {
   size: number;
 }
 
+/** Any other file in the vault (an attachment): images, text files, PDFs, … */
+export type RawFile = RawNote;
+
 export interface RawVault {
   /** Every Markdown note. */
   notes(): readonly RawNote[];
+  /** Every file that is not a Markdown note. */
+  files(): readonly RawFile[];
   /** Every folder path (no root). */
   folders(): readonly string[];
-  /** Obsidian's `metadataCache.resolvedLinks`: source path → target path → count. */
+  /** Obsidian's `metadataCache.resolvedLinks`: source path → target path (note or attachment) → count. */
   resolvedLinks(): Readonly<Record<string, Readonly<Record<string, number>>>>;
   /** The note's text, frontmatter included. */
   read(path: string): Promise<string>;
+  /** An attachment's bytes. */
+  readBytes(path: string): Promise<Uint8Array>;
 }

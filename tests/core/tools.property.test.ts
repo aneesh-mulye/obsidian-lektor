@@ -244,10 +244,10 @@ describe('display modes (INVARIANTS.md B5)', () => {
     run: () => Promise.resolve({ content: '', summary: '' }),
   });
   const registry = new ToolRegistry();
-  for (const n of ['web_search', 'fetch_page', 'propose_edit', 'propose_note']) registry.register(stub(n));
+  for (const n of ['web_search', 'fetch_page', 'propose_edit', 'propose_note', 'request_context']) registry.register(stub(n));
   const fenced = { instructions: 'FENCED', extract: () => Promise.resolve({ proposals: [], problems: [] }) };
 
-  it('B5: a Prose chat is never offered edit tools or fenced instructions, and is told to describe changes', () => {
+  it('B5: a Prose chat is never offered edit tools or fenced instructions, and is told to describe changes (and request_context is offered to every native model)', () => {
     fc.assert(
       fc.property(
         fc.option(fc.constantFrom(...DISPLAY_MODES), { nil: undefined }),
@@ -256,13 +256,15 @@ describe('display modes (INVARIANTS.md B5)', () => {
         fc.array(fc.constantFrom('a.md', 'b.md'), { maxLength: 2 }),
         fc.boolean(),
         fc.subarray(['web_search', 'fetch_page']),
-        (mode, fallback, toolCalling, editable, toolsDisabled, web) => {
+        fc.boolean(),
+        (mode, fallback, toolCalling, editable, toolsDisabled, web, requests) => {
           const runs = toolRuns(registry, {
             webNames: () => web,
             reviewNames: () => ['propose_edit', 'propose_note'],
             displayMode: () => fallback,
             limits: () => ({ searches: 3, fetches: 3 }),
             fenced: () => fenced,
+            ...(requests ? { attachmentMode: () => 'ask' as const } : {}),
           });
           const chat: Chat = {
             id: 'c', title: '', createdAt: 0, updatedAt: 0, model: null, messages: [], context: EMPTY_CONTEXT,
@@ -271,6 +273,9 @@ describe('display modes (INVARIANTS.md B5)', () => {
           };
           const run = runs.forReply({ chat, capabilities: { toolCalling, nativeWebSearch: false, images: false, contextWindow: 8192 }, contextUrls: [], editable });
           const names = (run?.definitions ?? []).map((d) => d.name);
+          // request_context: every model with native tool calling, in every mode, whatever the globe says; no other model.
+          expect(names.includes('request_context')).toBe(requests && toolCalling === 'native');
+          if (toolsDisabled) for (const w of web) expect(names).not.toContain(w);
           if ((mode ?? fallback) === 'prose') {
             expect(names).not.toContain('propose_edit');
             expect(names).not.toContain('propose_note');

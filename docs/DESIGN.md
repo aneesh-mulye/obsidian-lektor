@@ -428,6 +428,14 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
   - The display mode is stored per chat; chats from before milestone 6 use the setting.
   - Proposals in the open chat follow note renames.
   - `@codemirror/state` and `@codemirror/view` are pinned dev dependencies, for types only. They are the versions Obsidian bundles, and the build leaves them external.
+- *(2026-11-26, before milestone 7)* Attachments and `request_context`.
+  - Attachments reach a model through **converters**: one per kind of file, each naming its extensions, what it produces (text, or an image for vision models), a size limit and a token estimate. Milestone 7 ships two, plain text (`txt`, `csv`, `json`, code and the like, valid UTF-8 only) and images (PNG, JPEG, WebP, checked by their bytes). Files that can be reduced to text, such as PDFs, get their own converter later, as one file and one registration line, with no other change. A file with no converter is skipped with a notice, never sent raw.
+  - In Upfront mode each linked attachment shows as its own chip; removing one keeps it out of that chat. The per-chat mode is a paperclip menu in the context bar.
+  - In Ask and Allowed modes, each note in context lists the attachments it links to, by path only, so the model knows what it can ask for.
+  - A `request_context` card lists at most 20 items. A request matching more is refused with a tool error asking the model to narrow it, and no card is shown.
+  - Approved items are sent in the tool result for the rest of that reply and become chips for later messages. Chat history keeps only their paths (the manifest), as for all context. Denying, ticking nothing and "nothing matched" give the model the same answer.
+  - Images go to Ollama in a user message's `images` field; text attachments are items in the context message.
+  - `request_context` is offered to every model with native tool calling, in every display mode, whatever the globe says (the globe is for web tools). Models without tool calling don't get it.
 - *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.

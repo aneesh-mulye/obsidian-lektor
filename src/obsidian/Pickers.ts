@@ -4,7 +4,7 @@
 /** Fuzzy pickers for adding context. They list only what the filtered index allows. */
 
 import { type App, FuzzySuggestModal } from 'obsidian';
-import type { NoteMeta } from '../core/context/ContextIndex';
+import type { AttachmentMeta, NoteMeta } from '../core/context/ContextIndex';
 
 export class NotePicker extends FuzzySuggestModal<NoteMeta> {
   constructor(
@@ -43,5 +43,25 @@ export class FolderPicker extends FuzzySuggestModal<string> {
   }
   override onChooseItem(folder: string): void {
     this.onPick(folder);
+  }
+}
+
+export class AttachmentPicker extends FuzzySuggestModal<AttachmentMeta> {
+  constructor(
+    app: App,
+    private readonly files: AttachmentMeta[],
+    private readonly onPick: (file: AttachmentMeta) => void,
+  ) {
+    super(app);
+    this.setPlaceholder('Add an attachment (image, text file) to the context…');
+  }
+  override getItems(): AttachmentMeta[] {
+    return this.files;
+  }
+  override getItemText(file: AttachmentMeta): string {
+    return file.path;
+  }
+  override onChooseItem(file: AttachmentMeta): void {
+    this.onPick(file);
   }
 }

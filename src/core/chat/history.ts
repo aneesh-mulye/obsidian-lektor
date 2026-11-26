@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { type Chip, EMPTY_CONTEXT } from '../context/state';
 import type { ModelRef } from '../providers/types';
-import { DISPLAY_MODES, ModelRefSchema } from '../settings';
+import { ATTACHMENT_MODES, DISPLAY_MODES, ModelRefSchema } from '../settings';
 import type { Storage } from '../storage';
 import type { Chat } from './types';
 
@@ -24,6 +24,7 @@ const UserMessage = z.strictObject({
 const Manifest = z.strictObject({
   notes: z.array(z.strictObject({ path: z.string(), hash: z.string() })),
   selections: z.array(z.strictObject({ path: z.string(), hash: z.string() })),
+  attachments: z.array(z.strictObject({ path: z.string(), hash: z.string() })).optional(),
   backlinkLists: z.number(),
   excluded: z.number(),
 });
@@ -59,6 +60,7 @@ const AssistantMessage = z.strictObject({
                 limit: z.boolean().optional(),
                 urls: z.array(z.string()).optional(),
                 proposalId: z.string().optional(),
+                contextHash: z.string().optional(),
               })
               .optional(),
           }),
@@ -123,9 +125,15 @@ const ChipRecord = z.discriminatedUnion('kind', [
     to: z.int().min(0),
     hash: z.string(),
   }),
+  z.strictObject({ kind: z.literal('attachment'), id: z.string(), path: z.string(), lastHash: z.string().optional() }),
 ]);
 
-const ContextRecord = z.strictObject({ followActive: z.boolean(), chips: z.array(ChipRecord) });
+const ContextRecord = z.strictObject({
+  followActive: z.boolean(),
+  chips: z.array(ChipRecord),
+  attachmentMode: z.enum(ATTACHMENT_MODES).optional(),
+  withheld: z.array(z.string()).optional(),
+});
 
 const ChatV1 = z.strictObject({
   id: z.string(),
@@ -156,7 +164,7 @@ function toRecord(chat: Chat): unknown {
       const { text: _text, ...rest } = c;
       return rest;
     }
-    if (c.kind === 'note') {
+    if (c.kind === 'note' || c.kind === 'attachment') {
       const { changed: _changed, ...rest } = c;
       return rest;
     }
@@ -168,7 +176,12 @@ function toRecord(chat: Chat): unknown {
     const { approval: _a, ...rest } = m;
     return rest;
   });
-  return { ...chat, messages, context: { followActive: chat.context.followActive, chips } };
+  const { attachmentMode, withheld } = chat.context;
+  return {
+    ...chat,
+    messages,
+    context: { followActive: chat.context.followActive, chips, ...(attachmentMode ? { attachmentMode } : {}), ...(withheld ? { withheld } : {}) },
+  };
 }
 
 export interface ChatSummary {
@@ -208,12 +221,14 @@ export class ChatHistory {
     return { chats, unreadable };
   }
 
-  /** Chats that sent this note to a model (from their replies' context manifests). */
+  /** Chats that sent this note or attachment to a model (from their replies' context manifests). */
   async chatsSending(path: string): Promise<string[]> {
     const out: string[] = [];
+    const sent = (m: Chat['messages'][number]) =>
+      m.role === 'assistant' && (m.context?.notes.some((n) => n.path === path) || m.context?.attachments?.some((a) => a.path === path));
     for (const id of await this.storage.list('chats')) {
       const chat = this.parse(id, await this.storage.read('chats', id));
-      if (chat?.messages.some((m) => m.role === 'assistant' && m.context?.notes.some((n) => n.path === path))) out.push(id);
+      if (chat?.messages.some(sent)) out.push(id);
     }
     return out;
   }

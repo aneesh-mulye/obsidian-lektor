@@ -10,11 +10,13 @@
 import type { ContextIndex } from '../context/ContextIndex';
 import { type ContextPlan, type DepthPreview, planContext, previewDepths } from '../context/plan';
 import { restoreContext } from '../context/prepare';
+import type { AttachmentMode } from '../settings';
 import {
   type CapturedSelection,
   type Change,
   type ContextState,
   type Depth,
+  addAttachment,
   addFolder,
   addNote,
   addSelection,
@@ -26,7 +28,10 @@ import {
   setBacklinkContents,
   setDepth,
   setFollow,
+  setAttachmentMode,
   setRecursive,
+  withhold,
+  attachmentModeOf,
 } from '../context/state';
 import type { ChatSession } from './session';
 
@@ -38,6 +43,8 @@ export interface ContextDeps {
   /** The deepest link depth the settings allow. */
   maxDepth: () => Depth;
   onNotice: (message: string) => void;
+  /** The attachment mode for chats that never chose one (Settings → Context). Ask if absent. */
+  attachmentMode?: () => AttachmentMode;
 }
 
 export class ContextController {
@@ -67,6 +74,30 @@ export class ContextController {
 
   addFolder(path: string, recursive: boolean): void {
     this.apply(addFolder(this.state, this.deps.index, path, recursive, this.deps.newId));
+  }
+
+  addAttachment(path: string): void {
+    this.apply(addAttachment(this.state, this.deps.index, path, this.deps.newId));
+  }
+
+  /** Keep an attachment out of this chat (the × on an Upfront chip). */
+  withhold(path: string): void {
+    this.apply(withhold(this.state, path));
+  }
+
+  /** The paperclip: this chat's attachment mode, or undefined for the setting's. */
+  setAttachmentMode(mode: AttachmentMode | undefined): void {
+    this.apply(setAttachmentMode(this.state, mode));
+  }
+
+  /** The setting's attachment mode (for chats that never chose one). */
+  get defaultAttachmentMode(): AttachmentMode {
+    return this.deps.attachmentMode?.() ?? 'ask';
+  }
+
+  /** This chat's attachment mode. */
+  get attachmentMode(): AttachmentMode {
+    return attachmentModeOf(this.state, this.defaultAttachmentMode);
   }
 
   addSelection(selection: CapturedSelection): void {
@@ -124,12 +155,12 @@ export class ContextController {
   }
 
   plan(): ContextPlan {
-    return planContext(this.state, this.deps.index);
+    return planContext(this.state, this.deps.index, this.defaultAttachmentMode);
   }
 
   previews(chipId: string): DepthPreview[] {
     const chip = this.state.chips.find((c) => c.id === chipId);
-    return chip?.kind === 'note' ? previewDepths(chip, this.deps.index, this.deps.maxDepth()) : [];
+    return chip?.kind === 'note' ? previewDepths(chip, this.deps.index, this.deps.maxDepth(), this.attachmentMode) : [];
   }
 
   private apply(change: ContextState | Change): void {

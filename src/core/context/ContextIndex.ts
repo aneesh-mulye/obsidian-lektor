@@ -7,8 +7,12 @@
  * from link and backlink results (only counted, for the user), and `read`
  * refuses them, re-checking the exclusion rules at the moment of reading.
  * The link walk therefore can never pass *through* an excluded note.
+ *
+ * Attachments (every file that is not a note) follow the same rules: excluded
+ * ones do not exist here, and `readAttachment` re-checks before reading.
  */
 
+import { type ConverterRegistry, defaultConverters } from './attachments';
 import type { Exclusions } from './exclusions';
 import type { RawVault } from './vault';
 
@@ -16,6 +20,13 @@ export interface NoteMeta {
   path: string;
   /** File name without `.md`. */
   title: string;
+  size: number;
+}
+
+export interface AttachmentMeta {
+  path: string;
+  /** File name with its extension. */
+  name: string;
   size: number;
 }
 
@@ -31,6 +42,7 @@ export class ContextAccessError extends Error {
 
 const parentOf = (p: string) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
 const titleOf = (p: string) => p.slice(p.lastIndexOf('/') + 1).replace(/\.md$/i, '');
+const nameOf = (p: string) => p.slice(p.lastIndexOf('/') + 1);
 
 export class ContextIndex {
   #version = 0;
@@ -40,10 +52,15 @@ export class ContextIndex {
   #folders: string[] = [];
   #out = new Map<string, string[]>(); // raw note → raw note targets
   #in = new Map<string, string[]>(); // raw note → raw note sources
+  #allFiles = new Map<string, number>(); // every raw attachment → size
+  #files = new Map<string, AttachmentMeta>(); // allowed attachments only
+  #outFiles = new Map<string, string[]>(); // raw note → raw attachment targets
 
   constructor(
     private readonly raw: RawVault,
     private readonly exclusions: () => Exclusions,
+    /** How attachments are turned into model input (DESIGN.md § Embeds and attachments). */
+    readonly converters: ConverterRegistry = defaultConverters(),
   ) {
     this.#exclusions = exclusions();
   }
@@ -58,11 +75,18 @@ export class ContextIndex {
       if (!ex.isExcluded(path)) this.#notes.set(path, { path, title: titleOf(path), size });
     }
     this.#folders = this.raw.folders().filter((f) => !ex.isExcluded(f));
+    this.#allFiles = new Map(this.raw.files().filter((f) => !this.#all.has(f.path)).map((f) => [f.path, f.size]));
+    this.#files = new Map();
+    for (const [path, size] of this.#allFiles) {
+      if (!ex.isExcluded(path)) this.#files.set(path, { path, name: nameOf(path), size });
+    }
     this.#out = new Map();
     this.#in = new Map();
+    this.#outFiles = new Map();
     for (const [source, targets] of Object.entries(this.raw.resolvedLinks())) {
       if (!this.#all.has(source)) continue;
       const out = Object.keys(targets).filter((t) => this.#all.has(t)).sort();
+      this.#outFiles.set(source, Object.keys(targets).filter((t) => this.#allFiles.has(t)).sort());
       this.#out.set(source, out);
       for (const t of out) {
         const list = this.#in.get(t) ?? [];
@@ -121,6 +145,30 @@ export class ContextIndex {
 
   backlinks(path: string): Neighbours {
     return this.split(this.#notes.has(path) ? (this.#in.get(path) ?? []) : []);
+  }
+
+  attachment(path: string): AttachmentMeta | null {
+    return this.#files.get(path) ?? null;
+  }
+
+  attachments(): AttachmentMeta[] {
+    return [...this.#files.values()].sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  /** Attachments this note links to or embeds (excluded ones only counted). */
+  linkedAttachments(path: string): { files: string[]; excluded: string[] } {
+    const files: string[] = [];
+    const excluded: string[] = [];
+    for (const p of this.#notes.has(path) ? (this.#outFiles.get(path) ?? []) : []) (this.#files.has(p) ? files : excluded).push(p);
+    return { files, excluded };
+  }
+
+  /** An attachment's bytes. Refuses anything excluded *now*, or not an allowed attachment at the last refresh. */
+  async readAttachment(path: string): Promise<Uint8Array> {
+    if (!this.#files.has(path) || this.exclusions().isExcluded(path)) {
+      throw new ContextAccessError(`Lektor may not read ${path}.`);
+    }
+    return this.raw.readBytes(path);
   }
 
   /** The note's text. Refuses anything excluded *now*, or not an allowed note at the last refresh. */

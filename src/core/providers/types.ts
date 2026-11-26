@@ -33,8 +33,18 @@ export interface ToolCall {
   arguments: unknown;
 }
 
+/** An image sent with a message, for models with vision. */
+export interface ChatImage {
+  mime: string;
+  /** Base64 of the file's bytes. */
+  data: string;
+  /** Lektor's estimate (INVARIANTS.md C6). */
+  tokens: number;
+}
+
 export type ChatMessage =
-  | { role: 'system' | 'user'; content: string }
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string; images?: readonly ChatImage[] }
   | { role: 'assistant'; content: string; toolCalls?: ToolCall[] }
   | { role: 'tool'; content: string; toolName: string; toolCallId: string };
 

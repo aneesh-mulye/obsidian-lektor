@@ -81,7 +81,7 @@ function expectedFor(spec: VaultSpec, state: ContextState): Expected {
         const parent = n.path.includes('/') ? n.path.slice(0, n.path.lastIndexOf('/')) : '';
         if (parent === chip.path || (chip.recursive && n.path.startsWith(`${chip.path}/`))) take(n.path);
       }
-    } else if (chip.text !== undefined && valid(chip.path)) {
+    } else if (chip.kind === 'selection' && chip.text !== undefined && valid(chip.path)) {
       selections.add(chip.id);
     }
   }

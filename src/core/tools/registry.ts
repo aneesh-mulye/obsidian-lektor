@@ -77,6 +77,8 @@ export class ToolRegistry {
         summary: out.summary,
         ...(out.urls ? { urls: out.urls } : {}),
         ...(out.proposal ? { proposal: out.proposal, proposalId: out.proposal.id } : {}),
+        ...(out.transient ? { transient: out.transient } : {}),
+        ...(out.shared ? { shared: out.shared } : {}),
       };
     } catch (err) {
       if (ctx.signal.aborted) return fail('Stopped by the user.', `${tool.name}: stopped`);

@@ -80,6 +80,7 @@ function toOllamaMessage(m: ChatMessage): Record<string, unknown> {
     return { role: 'assistant', content: m.content, tool_calls: m.toolCalls.map((c) => ({ function: { name: c.name, arguments: c.arguments } })) };
   }
   if (m.role === 'tool') return { role: 'tool', content: m.content, tool_name: m.toolName };
+  if (m.role === 'user' && m.images && m.images.length > 0) return { role: 'user', content: m.content, images: m.images.map((i) => i.data) };
   return { role: m.role, content: m.content };
 }
 

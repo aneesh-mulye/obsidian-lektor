@@ -8,7 +8,7 @@ Stateful tests use `fc.commands(…, { size: 'large' })`. With the default size,
 
 Every invariant's test has been mutation-checked: each guard in the code was removed in turn, and the test had to fail. Mutants that survived led to stronger generators or extra tests. The remaining survivors are equivalent (redundant code that changes no behaviour).
 
-Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk); "normalises -0 to 0, on load and on update" (S2, seed 1865398749 in a CI-strength run: `-0` was stored as `-0` but saved as `0`). `tests/core/ndjson.property.test.ts` › "returns exactly JSON.parse of each line, -0 included" (N1, seed 316671435: the test's model compared against the in-memory `-0` instead of what JSON puts on the wire; the decoder was right). `tests/core/ollama.property.test.ts` › "sends tool-call arguments as JSON (so -0 becomes 0)" (O2, full-suite run, seed not captured: the same `-0` model mistake, in tool-call arguments). `tests/core/review.property.test.ts` › "reverting a change that emptied the note puts the text back" (W3–W5, seed -1474712944: correct behaviour; the checker treated the empty anchor of an emptied note as "not found"). `tests/core/rebase.property.test.ts` › "accepting one hunk cannot make another ambiguous after the user edited the note" (B1, CI-strength run: a real bug; rebase now re-places every hunk whenever the note changed outside the review); "without the previous text, a passage that now appears twice is dropped, never guessed" and "without the previous text, two hunks that would now overlap keep only the first" (two mutants of the context-search fallback survived the properties).
+Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk); "normalises -0 to 0, on load and on update" (S2, seed 1865398749 in a CI-strength run: `-0` was stored as `-0` but saved as `0`). `tests/core/ndjson.property.test.ts` › "returns exactly JSON.parse of each line, -0 included" (N1, seed 316671435: the test's model compared against the in-memory `-0` instead of what JSON puts on the wire; the decoder was right). `tests/core/ollama.property.test.ts` › "sends tool-call arguments as JSON (so -0 becomes 0)" (O2, full-suite run, seed not captured: the same `-0` model mistake, in tool-call arguments). `tests/core/review.property.test.ts` › "reverting a change that emptied the note puts the text back" (W3–W5, seed -1474712944: correct behaviour; the checker treated the empty anchor of an emptied note as "not found"). `tests/core/rebase.property.test.ts` › "accepting one hunk cannot make another ambiguous after the user edited the note" (B1, CI-strength run: a real bug; rebase now re-places every hunk whenever the note changed outside the review); "without the previous text, a passage that now appears twice is dropped, never guessed" and "without the previous text, two hunks that would now overlap keep only the first" (two mutants of the context-search fallback survived the properties). `tests/core/attachments.property.test.ts` › "reads a 1 × 1 lossless WebP, which is only 25 bytes" (A2, seed -1506384488: a real bug; the WebP check demanded 30 bytes for every variant). Its generator caps lossy WebP at 16,383 pixels a side (seed 231711628: the format can't express 16,384). Three mutants survived the first milestone 7 properties because a second check backed them up, so each guard now has its own test: the size limit ("a file is sendable only within its converter's size limit", "the limit holds for the bytes actually read"), the read-time exclusion re-check ("an attachment excluded after the index was built is refused at read time"), and the session's filter on ticked ids (`tests/core/share.session.test.ts` › "the session passes on only ticked ids that were offered").
 
 ---
 
@@ -520,11 +520,85 @@ On 2026-11-26, in a separate instance, with `qwen3.8:27b` proofreading `fixtures
 - **Sidebar diff:** the editor marks went away, and the card showed all three hunks.
 - **Prose:** the next request offered only `web_search` and `fetch_page`, and carried the Prose instruction as a system message. No marks were shown.
 
+## Milestone 7: `request_context` and attachments
+
+Shared generator, the **attachment world**: the X2 random vault, now with attachments beside the notes. Text attachments (`.txt`, `.csv`, `.json`, …) carry their own sentinel; images are tiny valid PNG, JPEG or WebP files whose bytes carry a sentinel; there are also files no converter handles (`.pdf`, `.mp3`, `.canvas`), files too large for their converter, invalid images, and attachments inside excluded folders. Notes link to attachments at random. Models with and without vision.
+
+### A1. Context containment, attachments part (design invariant 1; stateful) — active
+
+`tests/core/attachments.property.test.ts`, `fc.commands`
+
+- **Generator:** the attachment world, and random sequences of context actions: everything X2 does, plus add or remove an attachment chip, remove (withhold) an Upfront attachment chip, switch the chat's attachment mode (Ask, Allowed, Upfront, or back to the setting), change the global mode, and flip the model's vision. After each action the context is assembled exactly as a request would be.
+- **Model:** an attachment is *in context* if it has a chip, or if the mode is Upfront, a note whose content is in context (the X2 model) links to it, and the user has not withheld it. It is *sent* if it is in context, not excluded, has a converter, fits that converter's size limit, converts cleanly, and is not an image going to a model without vision.
+- **Property:**
+  - The request (context message plus images) contains an attachment's sentinel **if and only if** the model says it is sent. Text attachments are in the context message; images go only in the images list, as base64 of the exact bytes.
+  - Every attachment that is in context but not sent is listed as skipped, with a reason, and nothing else is.
+  - No excluded attachment is ever read, listed, counted as sendable or sent.
+  - In Ask and Allowed modes, notes in context list the attachments they link to by path only (excluded ones left out), and none of their content.
+  - The manifest lists exactly the sent attachments, with the hash of their bytes.
+- **Counterexample means:** a file the user didn't give the model, or one in an excluded folder, reaches it; or one the user did give it is silently dropped.
+
+### A2. Converters are exact, and the path is open — active
+
+`tests/core/attachments.property.test.ts`
+
+- **Generator:** random byte strings and random valid files of each built-in type, with random-case extensions; plus a test converter registered at run time for a new extension (standing in for a later PDF-to-text converter).
+- **Properties:**
+  - The text converter returns exactly the file's UTF-8 text, or fails for bytes that are not valid UTF-8. It never returns altered text.
+  - The image converter accepts only files whose bytes really are PNG, JPEG or WebP with readable dimensions, whatever the extension claims. It returns the exact bytes in base64 with the right media type, and a token estimate that grows with the pixel count, between its floor and its cap.
+  - Converter lookup ignores extension case and picks exactly one converter or none. A file with none is skipped with a "no converter" reason, never sent raw.
+  - Registering a converter for a new extension makes those files sendable through the same path (chips, Upfront, `request_context`) with no other change: text output joins the context message, image output joins the images list.
+- **Counterexample means:** a file reaches the model altered or mislabelled, or binary junk is sent as text.
+
+### A3. `request_context` shares only what the user approved (stateful) — active
+
+`tests/core/request.property.test.ts`, `fc.commands`
+
+- **Generator:** the attachment world, a random context, a random attachment mode, and random `request_context` calls: notes by path or title (existing, missing, excluded, ambiguous), "linked from X to depth N", folders (recursive or not, excluded), title searches, attachments by path or file name, garbage arguments, and requests that match more than 20 files. Each is answered by a random approval: deny, approve all, approve a random subset, or answer with ids that were never offered. Stop can interrupt the card.
+- **Properties:**
+  - The card lists at most 20 items, never an excluded one, and never one already in context. A request matching more than 20 shows no card, reads nothing and returns an error asking the model to narrow it.
+  - Nothing is read before the user answers, except Allowed-mode grants.
+  - What the model receives contains an item's sentinel **if and only if** the user ticked it, or it was granted without a prompt. A grant without a prompt happens only in Allowed mode, only for an attachment linked from a note already in context, and never for one the user withheld.
+  - Ids the user never saw are ignored.
+  - Denying, ticking nothing and "nothing matched" give the model the same answer, so it learns nothing about notes it wasn't given.
+  - Shared items become chips: exactly the approved ones.
+  - The tool result saved in chat history names the shared paths and contains no sentinel.
+- **Counterexample means:** the model can read, or learn about, notes and files the user didn't approve (hard rule 2).
+
+### A4. Shared items flow through the session — active
+
+`tests/core/share.session.test.ts` (a real session, tool run and `request_context`, with random approvals, vision and full-transcript settings) and `tests/core/history.property.test.ts` (H4, H5)
+
+- **Properties:**
+  - In the same reply, the round after an approval carries the shared text in its tool result exactly once, and shared images in one user message right after the tool results.
+  - The reply's manifest includes every note and attachment shared during the reply, so deleting one later still finds the chat.
+  - The approved notes may be proposed edits to in the same reply.
+  - From the next message on, the shared items reach the model through the context message (they are chips), and the saved tool result holds only paths. With "store full transcripts" on, the shared text can be recovered exactly.
+  - Every round, images included, passes the C6 budget check.
+- **Counterexample means:** shared material goes missing, is sent twice, overflows the window silently, or survives in history after the note is deleted.
+
+### O2 (extended in milestone 7)
+
+A message carries Ollama's `images` field (base64, in order) only when it has images, and every other message is still exactly `{role, content}`. Images reach a request only for models that report the `vision` capability (A1).
+
+### Checked in a real Obsidian (milestone 7)
+
+On 2026-11-26, in a separate instance, with `qwen3.8:27b` (which has vision), on a copy of `fixtures/vault`. The fixture vault now has a legible image embedded in `Drafts/Essay`, a CSV linked from `Reference/Sources`, and an image in the excluded `Private/` folder, also embedded in the essay.
+
+- **Ask (the setting):** the first request offered `request_context`, listed `attachments/diagram.png` under the essay by path only, and sent no image. `Private/scan.png` was never listed or sent; it was only counted ("2 excluded items skipped"). That also confirmed that Obsidian's `resolvedLinks` includes links to attachments.
+- **Sharing:** the model called `request_context`. The card listed the image with its estimate, all ticked. After "Share all", the next request carried the tool result naming the image and one user message with the image right after it. The model described "a red conical lighthouse … with the text BELL ROCK 1811". The image became a chip.
+- **Upfront (paperclip, this chat only):** adding `Sources` brought `keepers.csv` in as a dotted chip of its own. The request carried the CSV's text, and the model answered "7731". Removing that chip kept the CSV out of the next request, which listed it by path only.
+- **Deny:** asking for "Chain A" and `Private/Diary.md` produced a card listing only `Reference/Chain A.md`. On Deny, the model got the standard "did not share anything" answer.
+- **Allowed:** in a new chat, the linked image was shared without a card, and the model read "BELL ROCK 1811". The reply showed "Asked for context: shared 1 item".
+- **History:** the saved chat's tool results held paths only, and the manifests listed the shared image and the CSV. No `PRIVATE-SENTINEL` appeared in any request.
+
+The user's own Obsidian profile was unchanged before and after.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.
 
-1. **Context containment:** active for milestone 3's sources as X2; extended to `request_context` and attachments in M7.
+1. **Context containment:** active as X2 (milestone 3 sources), A1 (attachments) and A3 (`request_context`).
 2. **Backlink lists carry no content:** active as X3.
 3. **No write without accept:** active as W3.
 4. **Hunk algebra:** active as W1.

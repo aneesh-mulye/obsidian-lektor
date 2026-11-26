@@ -65,7 +65,7 @@ const message: fc.Arbitrary<Message> = fc.oneof(
                   name: fc.constantFrom('web_search', 'fetch_page'),
                   arguments: fc.jsonValue(),
                   result: fc.record(
-                    { ok: fc.boolean(), content: text, summary: fc.string(), limit: fc.boolean(), urls: fc.array(fc.webUrl(), { maxLength: 2 }) },
+                    { ok: fc.boolean(), content: text, summary: fc.string(), limit: fc.boolean(), urls: fc.array(fc.webUrl(), { maxLength: 2 }), contextHash: fc.string() },
                     { requiredKeys: ['ok', 'content', 'summary'] },
                   ),
                 },
@@ -76,13 +76,26 @@ const message: fc.Arbitrary<Message> = fc.oneof(
           }),
           { maxLength: 2 },
         ),
-        approval: fc.record({ id: fc.string(), tool: fc.constant('fetch_page'), title: fc.string(), detail: fc.string() }),
-        context: fc.record({
-          notes: fc.array(fc.record({ path: fc.constantFrom('a.md', 'b.md', 'Private/c.md'), hash: fc.constant('h') }), { maxLength: 2 }),
-          selections: fc.constant([] as Array<{ path: string; hash: string }>),
-          backlinkLists: fc.nat({ max: 3 }),
-          excluded: fc.nat({ max: 3 }),
-        }),
+        approval: fc.oneof(
+          fc.record({ id: fc.string(), tool: fc.constant('fetch_page'), title: fc.string(), detail: fc.string() }),
+          fc.record({
+            id: fc.string(),
+            tool: fc.constant('request_context'),
+            title: fc.string(),
+            detail: fc.string(),
+            items: fc.array(fc.record({ id: fc.string(), kind: fc.constantFrom('note' as const, 'attachment' as const), label: fc.string(), tokens: fc.nat() }), { maxLength: 2 }),
+          }),
+        ),
+        context: fc.record(
+          {
+            notes: fc.array(fc.record({ path: fc.constantFrom('a.md', 'b.md', 'Private/c.md'), hash: fc.constant('h') }), { maxLength: 2 }),
+            selections: fc.constant([] as Array<{ path: string; hash: string }>),
+            attachments: fc.array(fc.record({ path: fc.constantFrom('img.png', 'a.txt'), hash: fc.constant('h') }), { maxLength: 2 }),
+            backlinkLists: fc.nat({ max: 3 }),
+            excluded: fc.nat({ max: 3 }),
+          },
+          { requiredKeys: ['notes', 'selections', 'backlinkLists', 'excluded'] },
+        ),
       },
       { requiredKeys: ['id', 'role', 'content', 'reasoning', 'status', 'model', 'createdAt'] },
     )
@@ -122,6 +135,12 @@ const chip: fc.Arbitrary<Chip> = fc.oneof(
       { requiredKeys: ['kind', 'id', 'path', 'from', 'to', 'hash'] },
     )
     .map((c) => c as Chip),
+  fc
+    .record(
+      { kind: fc.constant('attachment' as const), id: fc.uuid(), path: fc.string({ minLength: 1 }), lastHash: fc.stringMatching(/^[0-9a-f]{64}$/), changed: fc.boolean() },
+      { requiredKeys: ['kind', 'id', 'path'] },
+    )
+    .map((c) => c as Chip),
 );
 
 const chat = (chatId: string): fc.Arbitrary<Chat> =>
@@ -133,7 +152,15 @@ const chat = (chatId: string): fc.Arbitrary<Chat> =>
       updatedAt: fc.nat({ max: 50 }),
       model: fc.option(ref, { nil: null }),
       messages: fc.array(message, { maxLength: 5 }),
-      context: fc.record({ followActive: fc.boolean(), chips: fc.array(chip, { maxLength: 4 }) }),
+      context: fc.record(
+        {
+          followActive: fc.boolean(),
+          chips: fc.array(chip, { maxLength: 4 }),
+          attachmentMode: fc.constantFrom('ask' as const, 'allowed' as const, 'upfront' as const),
+          withheld: fc.array(fc.string({ minLength: 1 }), { minLength: 1, maxLength: 2 }),
+        },
+        { requiredKeys: ['followActive', 'chips'] },
+      ),
       sentContext: fc.option(fc.dictionary(fc.string(), fc.oneof(text, fc.constant(`ctx ${SECRET}`)), { maxKeys: 3 }), { nil: undefined }),
       proposals: fc.option(
         fc.dictionary(
@@ -195,7 +222,7 @@ const normalised = (c: Chat): Chat => ({
         const { text: _t, ...rest } = x;
         return rest;
       }
-      if (x.kind === 'note') {
+      if (x.kind === 'note' || x.kind === 'attachment') {
         const { changed: _c, ...rest } = x;
         return rest;
       }
@@ -292,14 +319,15 @@ describe('ChatHistory (INVARIANTS.md H1–H3)', () => {
     );
   });
 
-  it('H5: chatsSending finds exactly the chats whose replies sent the note', async () => {
+  it('H5: chatsSending finds exactly the chats whose replies sent the note or attachment', async () => {
     await fc.assert(
-      fc.asyncProperty(fc.uniqueArray(fc.constantFrom('a1', 'b2', 'c3', 'd4'), { maxLength: 4 }).chain((ids) => fc.tuple(...ids.map((id) => chat(id)))), fc.constantFrom('a.md', 'b.md', 'Private/c.md'), async (chats, path) => {
+      fc.asyncProperty(fc.uniqueArray(fc.constantFrom('a1', 'b2', 'c3', 'd4'), { maxLength: 4 }).chain((ids) => fc.tuple(...ids.map((id) => chat(id)))), fc.constantFrom('a.md', 'b.md', 'Private/c.md', 'img.png', 'a.txt'), async (chats, path) => {
         const storage = new MemStorage();
         const history = new ChatHistory(storage);
         for (const c of chats) await history.save(c);
         storage.files.set('chats/zz9', '{broken');
-        const expected = chats.filter((c) => c.messages.some((m) => m.role === 'assistant' && m.context?.notes.some((n) => n.path === path))).map((c) => c.id).sort();
+        const sent = (m: Chat['messages'][number]) => m.role === 'assistant' && [...(m.context?.notes ?? []), ...(m.context?.attachments ?? [])].some((n) => n.path === path);
+        const expected = chats.filter((c) => c.messages.some(sent)).map((c) => c.id).sort();
         expect((await history.chatsSending(path)).sort()).toEqual(expected);
       }),
     );

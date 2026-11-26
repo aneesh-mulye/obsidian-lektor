@@ -4,11 +4,11 @@
 /** Builds each reply's tool run: which tools, one budget per message, and the URLs fetch_page may use freely. */
 
 import { type ToolRun, type ToolsDeps, displayModeOf } from '../chat/types';
-import type { DisplayMode } from '../settings';
+import type { AttachmentMode, DisplayMode } from '../settings';
 import type { ModelRef } from '../providers/types';
 import { ToolBudget } from './budget';
 import type { ToolRegistry } from './registry';
-import { KnownUrls } from './urls';
+import { KnownUrls, extractUrls } from './urls';
 
 export interface ToolRunOptions {
   /** Web tools enabled right now (e.g. web_search only once a provider is set up); the chat's globe can turn them off. */
@@ -18,6 +18,12 @@ export interface ToolRunOptions {
   /** The display mode for chats that never chose one (Settings → Review). */
   displayMode: () => DisplayMode;
   limits: () => { searches: number; fetches: number };
+  /**
+   * With this set, request_context is offered to every model with native tool calling, in every
+   * display mode and whatever the globe says (DESIGN.md § Decided, milestone 7). It is the setting,
+   * for chats that never chose an attachment mode.
+   */
+  attachmentMode?: () => AttachmentMode;
   /** For models without tool calling: the fenced-block fallback for proposing edits. */
   fenced?: (editable: ReadonlySet<string>, model: ModelRef | null) => NonNullable<ToolRun['fenced']>;
 }
@@ -50,6 +56,7 @@ export function toolRuns(registry: ToolRegistry, options: ToolRunOptions): Tools
       }
       const names = [
         ...(chat.toolsDisabled ? [] : options.webNames()),
+        ...(options.attachmentMode ? ['request_context'] : []),
         ...reviewNames.filter((n) => n !== 'propose_edit' || editableSet.size > 0),
       ];
       if (names.length === 0) return prose ? PROSE_ONLY : null;
@@ -64,9 +71,21 @@ export function toolRuns(registry: ToolRegistry, options: ToolRunOptions): Tools
       return {
         ...(prose ? { instructions: PROSE } : {}),
         definitions: registry.definitions(names),
-        async execute(call, signal, approve) {
-          const result = await registry.execute(call, enabled, budget, { signal, knownUrls: known, approve, editable: editableSet, model: chat.model });
+        async execute(call, signal, approve, extra) {
+          const fallbackMode = options.attachmentMode?.() ?? 'ask';
+          const result = await registry.execute(call, enabled, budget, {
+            signal,
+            knownUrls: known,
+            approve,
+            editable: editableSet,
+            model: chat.model,
+            ...(extra?.choose ? { choose: extra.choose } : {}),
+            ...(extra?.context ? { context: { state: extra.context(), fallbackMode, accepts: { images: capabilities.images } } } : {}),
+          });
           for (const u of result.urls ?? []) known.add(u);
+          // Shared notes are now in context: the model may propose edits to them, and fetch the URLs they contain.
+          for (const p of result.shared?.notes ?? []) editableSet.add(p);
+          if (result.shared) for (const u of extractUrls(result.transient?.content ?? '')) known.add(u);
           return result;
         },
       };

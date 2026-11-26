@@ -39,12 +39,18 @@ export class ContextBroker {
     const vault = app.vault;
     const raw: RawVault = {
       notes: () => vault.getMarkdownFiles().map((f) => ({ path: f.path, size: f.stat.size })),
+      files: () => vault.getFiles().filter((f) => f.extension !== 'md').map((f) => ({ path: f.path, size: f.stat.size })),
       folders: () => vault.getAllFolders(false).map((f) => f.path),
       resolvedLinks: () => app.metadataCache.resolvedLinks,
       read: async (path) => {
         const file = vault.getFileByPath(path);
         if (!file) throw new Error(`${path} no longer exists.`);
         return vault.cachedRead(file);
+      },
+      readBytes: async (path) => {
+        const file = vault.getFileByPath(path);
+        if (!file) throw new Error(`${path} no longer exists.`);
+        return new Uint8Array(await vault.readBinary(file));
       },
     };
     this.index = new ContextIndex(raw, () => this.exclusions());
@@ -66,7 +72,7 @@ export class ContextBroker {
     for (const l of this.#listeners) l();
   }
 
-  /** Keep the index up to date with the vault. `onRename` gets old and new paths; `onDelete` the path of a deleted note. */
+  /** Keep the index up to date with the vault. `onRename` gets old and new paths; `onDelete` the path of a deleted note or attachment. */
   watch(
     owner: Component,
     onChange: () => void,
@@ -93,7 +99,7 @@ export class ContextBroker {
     }
     owner.registerEvent(
       this.app.vault.on('delete', (file) => {
-        if (file instanceof TFile && file.extension === 'md') onDelete(file.path);
+        if (file instanceof TFile) onDelete(file.path);
         changed();
       }),
     );
@@ -139,14 +145,17 @@ export class ContextBroker {
     return length > 0 ? { path: view.file.path, length } : null;
   }
 
-  /** Notes and folders dragged from the file explorer. Excluded ones are left out (and counted). */
-  dropped(): { notes: string[]; folders: string[]; excluded: number } {
+  /** Notes, attachments and folders dragged from the file explorer. Excluded ones are left out (and counted). */
+  dropped(): { notes: string[]; attachments: string[]; folders: string[]; excluded: number } {
     const drag = (this.app as unknown as { dragManager?: DragManager }).dragManager?.draggable;
     const items = drag?.files ?? (drag?.file ? [drag.file] : []);
-    const out = { notes: [] as string[], folders: [] as string[], excluded: 0 };
+    const out = { notes: [] as string[], attachments: [] as string[], folders: [] as string[], excluded: 0 };
     for (const item of items) {
       if (item instanceof TFile && item.extension === 'md') {
         if (this.index.note(item.path)) out.notes.push(item.path);
+        else out.excluded += 1;
+      } else if (item instanceof TFile) {
+        if (this.index.attachment(item.path)) out.attachments.push(item.path);
         else out.excluded += 1;
       } else if (item instanceof TFolder) {
         if (this.index.hasFolder(item.path)) out.folders.push(item.path);

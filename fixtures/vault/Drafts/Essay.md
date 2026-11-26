@@ -13,3 +13,5 @@ Robert Louis Stevenson designed the Skerryvore lighthouse himself, and the tower
 See [[Sources]] and [[Chain A]]. My private notes are in [[Diary]]; the template is [[Daily]].
 
 ![[diagram.png]]
+
+![[scan.png]]

@@ -4,7 +4,7 @@
 /** The sidebar's chat state: the open chat, starting and switching chats, history. */
 
 import { prepareContext } from '../context/prepare';
-import { EMPTY_CONTEXT } from '../context/state';
+import { EMPTY_CONTEXT, addShared } from '../context/state';
 import { type ContextDeps, ContextController } from './ContextController';
 import type { ModelRef } from '../providers/types';
 import type { DisplayMode } from '../settings';
@@ -131,13 +131,21 @@ export class ChatManager {
       newId: this.deps.newId,
       save: (c) => this.deps.history.save(c),
       onSaveError: (err) => this.deps.onError('Could not save the chat.', err),
-      ...(this.deps.context ? { prepare: (state) => prepareContext(state, this.deps.context!.index) } : {}),
+      ...(this.deps.context ? this.#contextDeps(this.deps.context) : {}),
       ...(this.deps.storeFullTranscripts ? { storeFullTranscripts: this.deps.storeFullTranscripts } : {}),
       ...(this.deps.tools ? { tools: this.deps.tools } : {}),
     });
     this.#unsubscribe();
     this.#unsubscribe = session.subscribe(() => this.#changed());
     return session;
+  }
+
+  /** How a session reads its chips, and how what the user shares through request_context becomes chips. */
+  #contextDeps(context: ContextDeps) {
+    return {
+      prepare: (state: Chat['context'], accepts: { images: boolean }) => prepareContext(state, context.index, { attachmentMode: context.attachmentMode?.() ?? 'ask', accepts }),
+      share: (state: Chat['context'], shared: { notes: readonly string[]; attachments: readonly string[] }) => addShared(state, context.index, shared, context.newId),
+    };
   }
 
   #switch(chat: Chat): void {
