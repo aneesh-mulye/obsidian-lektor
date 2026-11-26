@@ -315,7 +315,8 @@ describe('OllamaProvider requests (INVARIANTS.md O2)', () => {
         // The fake server reports a context length of 8192 for every model.
         expect(body).toEqual({
           model,
-          messages: input.map(ollamaMessage),
+          // What is on the wire: JSON writes -0 in tool arguments as 0 (see the regression test below).
+          messages: JSON.parse(JSON.stringify(input.map(ollamaMessage))) as unknown,
           ...(tools.length > 0 ? { tools: tools.map((t) => ({ type: 'function', function: t })) } : {}),
           stream: true,
           options: { num_ctx: Math.min(ctx, 8192) },
@@ -326,6 +327,19 @@ describe('OllamaProvider requests (INVARIANTS.md O2)', () => {
         expect(JSON.parse(show.body!)).toEqual({ model });
       }),
     );
+  });
+});
+
+describe('OllamaProvider request encoding', () => {
+  // Regression (O2, full-suite run, seed not captured): fc.jsonValue() produced -0 inside tool-call
+  // arguments; JSON sends it as 0. The model compared against the in-memory -0; the request was right.
+  it('sends tool-call arguments as JSON (so -0 becomes 0)', async () => {
+    const http = new FakeHttp({ status: 200, errorBody: '', lines: [{ kind: 'done' }], ending: 'close', offsets: [], requestThrows: false, thinking: false, showFails: false });
+    const provider = new OllamaProvider(http, () => 'http://h', () => 32768);
+    const messages: ChatMessage[] = [{ role: 'assistant', content: '', toolCalls: [{ id: 'c', name: 'web_search', arguments: { n: -0 } }] }];
+    for await (const _ of provider.stream({ model: 'm', messages }, new AbortController().signal)) { /* drain */ }
+    const body = JSON.parse(http.requests.find((r) => r.url.endsWith('/api/chat'))!.body!) as { messages: Array<{ tool_calls: Array<{ function: { arguments: { n: number } } }> }> };
+    expect(Object.is(body.messages[0]!.tool_calls[0]!.function.arguments.n, 0)).toBe(true);
   });
 });
 

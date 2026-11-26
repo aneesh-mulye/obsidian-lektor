@@ -11,9 +11,10 @@ import { type ContextManifest, type PreparedContext, recordSent, sha256 } from '
 import type { ContextState } from '../context/state';
 import { MESSAGE_OVERHEAD, estimateTokens, fits, formatTokens } from '../context/tokens';
 import type { ChatMessage, ChatProvider, ChatRequest, ModelRef, ToolCall } from '../providers/types';
+import type { Proposal } from '../review/types';
 import type { ApprovalRequest } from '../tools/types';
 import { messagesTokens, roundMessages, titleFrom, toRequestMessages } from './transcript';
-import type { AssistantMessage, Chat, Clock, Message, ProviderLookup, ToolsDeps } from './types';
+import type { AssistantMessage, Chat, Clock, Message, ProviderLookup, ToolRun, ToolsDeps } from './types';
 
 /** The tool loop's limit: at most this many requests per reply; the last offers no tools (INVARIANTS.md C7). */
 export const MAX_TOOL_ROUNDS = 8;
@@ -163,7 +164,9 @@ export class ChatSession {
       const base: ChatMessage[] = prepared?.message ? [{ role: 'system', content: prepared.message }, ...transcript] : transcript;
       const baseEstimate = (prepared?.tokens ?? 0) + messagesTokens(transcript, estimateTokens, MESSAGE_OVERHEAD);
       // One tool run (one budget) per user message (INVARIANTS.md T2).
-      const tools = this.deps.tools?.forReply({ chat: this.#chat, capabilities: caps, contextUrls: prepared?.urls ?? [] }) ?? null;
+      const editable = prepared ? [...new Set([...prepared.manifest.notes.map((n) => n.path), ...prepared.manifest.selections.map((x) => x.path)])] : [];
+      const tools = this.deps.tools?.forReply({ chat: this.#chat, capabilities: caps, contextUrls: prepared?.urls ?? [], editable }) ?? null;
+      if (tools?.fenced) base.push({ role: 'system', content: tools.fenced.instructions });
 
       for (let round = 0; ; round++) {
         const rounds = this.#reply()?.steps ?? [];
@@ -179,9 +182,13 @@ export class ChatSession {
         if (!live()) return;
 
         // The last round offers no tools, so the loop always ends with an answer.
-        const offered = tools !== null && round < MAX_TOOL_ROUNDS - 1 ? tools.definitions : undefined;
+        const offered = tools !== null && tools.definitions.length > 0 && round < MAX_TOOL_ROUNDS - 1 ? tools.definitions : undefined;
         const calls = await this.#streamRound(provider, { model: model.model, messages: [...base, ...extra], ...(offered ? { tools: offered } : {}) }, signal, live, window);
-        if (calls === null || !live()) return;
+        if (calls === null) {
+          if (tools?.fenced && run === this.#run) await this.#extractFenced(tools.fenced);
+          return;
+        }
+        if (!live()) return;
 
         // A tool round: keep what the model said with its calls, then run them in order.
         const index = rounds.length;
@@ -192,8 +199,9 @@ export class ChatSession {
         }));
         this.#emit();
         for (let i = 0; i < calls.length; i++) {
-          const result = await tools!.execute(calls[i]!, signal, (request) => this.#askApproval(request));
+          const { proposal, ...result } = await tools!.execute(calls[i]!, signal, (request) => this.#askApproval(request));
           if (!live()) return;
+          if (proposal) this.#set({ ...this.#chat, proposals: { ...(this.#chat.proposals ?? {}), [proposal.id]: proposal } });
           this.#updateReply((r) => ({
             ...r,
             steps: r.steps!.map((st, k) => (k !== index ? st : { ...st, calls: st.calls.map((c, j) => (j === i ? { ...c, result } : c)) })),
@@ -265,6 +273,31 @@ export class ChatSession {
         // ignore
       }
     }
+  }
+
+  /** A finished reply from a model without tool calling: turn its `lektor-edit` blocks into proposals. */
+  async #extractFenced(fenced: NonNullable<ToolRun['fenced']>): Promise<void> {
+    const reply = this.#reply();
+    if (reply?.status !== 'complete') return;
+    const { proposals, problems } = await fenced.extract(reply.content);
+    if (proposals.length === 0 && problems.length === 0) return;
+    this.#set({ ...this.#chat, proposals: { ...(this.#chat.proposals ?? {}), ...Object.fromEntries(proposals.map((p) => [p.id, p])) } });
+    this.#updateReply((r) => ({
+      ...r,
+      ...(proposals.length > 0 ? { fencedProposals: proposals.map((p) => p.id) } : {}),
+      ...(problems.length > 0 ? { notice: `Some proposed edits could not be used: ${problems.join(' ')}` } : {}),
+    }));
+    this.#emit();
+    this.#persist();
+  }
+
+  /** Change a proposal's state (the review manager, on a user's click). */
+  updateProposal(id: string, fn: (p: Proposal) => Proposal): void {
+    const current = this.#chat.proposals?.[id];
+    if (!current) return;
+    this.#set({ ...this.#chat, proposals: { ...this.#chat.proposals, [id]: fn(current) } });
+    this.#emit();
+    this.#persist();
   }
 
   /** Show an approval card on the reply and wait for the user (or Stop, which declines). */

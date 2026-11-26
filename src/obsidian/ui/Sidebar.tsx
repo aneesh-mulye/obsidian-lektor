@@ -4,14 +4,16 @@
 /** The sidebar's three zones (DESIGN.md § UI): header, conversation, composer. */
 
 import { Menu } from 'obsidian';
-import { type ChangeEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { type ChangeEvent, type KeyboardEvent, type MouseEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChatSummary } from '../../core/chat/history';
 import type { ChatManager } from '../../core/chat/manager';
 import type { AssistantMessage, Chat, ToolRound } from '../../core/chat/types';
 import type { Capabilities, ChatProvider } from '../../core/providers/types';
 import { normaliseUrl } from '../../core/tools/urls';
 import type { ModelRef } from '../../core/providers/types';
+import type { ChatSession } from '../../core/chat/session';
 import { ContextBar, type ContextUi } from './ContextBar';
+import { ProposalCard, type ReviewUi } from './Review';
 import { Icon, IconButton } from './Icon';
 import { SafeMarkdown } from './SafeMarkdown';
 
@@ -24,6 +26,8 @@ export interface SidebarProps {
   context?: ContextUi;
   /** Whether a web search provider is set up. */
   searchConfigured?: () => boolean;
+  /** Reviewing proposed edits and notes. */
+  review?: ReviewUi;
 }
 
 /** The model's capabilities (null while unknown). */
@@ -46,7 +50,7 @@ function useCapabilities(providers: readonly ChatProvider[], model: ModelRef | n
   return caps;
 }
 
-export function Sidebar({ manager, providers, clearAllChats, context, searchConfigured }: SidebarProps) {
+export function Sidebar({ manager, providers, clearAllChats, context, searchConfigured, review }: SidebarProps) {
   const { chat, busy } = useSyncExternalStore(manager.subscribe, manager.snapshot);
   const [historyOpen, setHistoryOpen] = useState(false);
   const caps = useCapabilities(providers, chat.model);
@@ -83,6 +87,8 @@ export function Sidebar({ manager, providers, clearAllChats, context, searchConf
         <Conversation
           chat={chat}
           busy={busy}
+          session={manager.session}
+          {...(review ? { review } : {})}
           onRegenerate={() => manager.session.regenerate()}
           onApprove={(id, ok) => manager.session.answerApproval(id, ok)}
         />
@@ -189,7 +195,16 @@ function Header(props: {
 // ---------------------------------------------------------------------------
 // Conversation
 
-function Conversation({ chat, busy, onRegenerate, onApprove }: { chat: Chat; busy: boolean; onRegenerate: () => void; onApprove: (id: string, ok: boolean) => void }) {
+function Conversation(props: {
+  chat: Chat;
+  busy: boolean;
+  session: ChatSession;
+  review?: ReviewUi;
+  onRegenerate: () => void;
+  onApprove: (id: string, ok: boolean) => void;
+}) {
+  const { chat, busy, session, review, onRegenerate, onApprove } = props;
+  const card = (id: string) => (review ? <ProposalCard key={id} proposal={chat.proposals?.[id]} session={session} ui={review} /> : null);
   const ref = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -220,15 +235,21 @@ function Conversation({ chat, busy, onRegenerate, onApprove }: { chat: Chat; bus
             {m.content}
           </div>
         ) : (
-          <Reply key={m.id} message={m} canRegenerate={i === last && !busy} onRegenerate={onRegenerate} onApprove={onApprove} />
+          <Reply key={m.id} message={m} canRegenerate={i === last && !busy} onRegenerate={onRegenerate} onApprove={onApprove} card={card} />
         ),
       )}
     </div>
   );
 }
 
-function Reply(props: { message: AssistantMessage; canRegenerate: boolean; onRegenerate: () => void; onApprove: (id: string, ok: boolean) => void }) {
-  const { message: m, canRegenerate, onRegenerate, onApprove } = props;
+function Reply(props: {
+  message: AssistantMessage;
+  canRegenerate: boolean;
+  onRegenerate: () => void;
+  onApprove: (id: string, ok: boolean) => void;
+  card: (proposalId: string) => ReactNode;
+}) {
+  const { message: m, canRegenerate, onRegenerate, onApprove, card } = props;
   const streaming = m.status === 'streaming';
   const steps = m.steps ?? [];
   return (
@@ -240,7 +261,7 @@ function Reply(props: { message: AssistantMessage; canRegenerate: boolean; onReg
         </details>
       )}
       {steps.map((round, k) => (
-        <ToolRoundView key={k} round={round} />
+        <ToolRoundView key={k} round={round} card={card} />
       ))}
       {m.approval && (
         <div className="lektor-approval" role="group" aria-label={m.approval.title}>
@@ -257,6 +278,8 @@ function Reply(props: { message: AssistantMessage; canRegenerate: boolean; onReg
         </div>
       )}
       {m.content !== '' && <SafeMarkdown text={m.content} />}
+      {(m.fencedProposals ?? []).map(card)}
+      {m.notice && <div className="lektor-note">{m.notice}</div>}
       {streaming && m.content === '' && m.reasoning === '' && steps.length === 0 && <div className="lektor-pending" aria-label="Waiting for the model">…</div>}
       {m.status === 'stopped' && <div className="lektor-note">Stopped.</div>}
       {m.status === 'truncated' && <div className="lektor-note">Cut off at the model’s length limit.</div>}
@@ -271,7 +294,7 @@ function Reply(props: { message: AssistantMessage; canRegenerate: boolean; onReg
 }
 
 /** One tool round: what the model said, then one line for its calls (expandable). */
-function ToolRoundView({ round }: { round: ToolRound }) {
+function ToolRoundView({ round, card }: { round: ToolRound; card: (proposalId: string) => ReactNode }) {
   const searches = round.calls.filter((c) => c.name === 'web_search');
   const fetches = round.calls.filter((c) => c.name === 'fetch_page');
   const results = searches.reduce((t, c) => t + (c.result?.urls?.length ?? 0), 0);
@@ -284,7 +307,12 @@ function ToolRoundView({ round }: { round: ToolRound }) {
   const notFetched = fetches.filter((c) => c.result && !c.result.ok && !c.result.limit).length;
   if (fetched > 0) parts.push(`Fetched ${fetched} ${fetched === 1 ? 'page' : 'pages'}`);
   if (notFetched > 0) parts.push(notFetched === 1 ? 'Fetch failed or declined' : `${notFetched} fetches failed or declined`);
-  const others = round.calls.length - searches.length - fetches.length;
+  const proposals = round.calls.filter((c) => c.name === 'propose_edit' || c.name === 'propose_note');
+  const madeProposals = proposals.filter((c) => c.result?.ok).length;
+  if (madeProposals > 0) parts.push(madeProposals === 1 ? 'Proposed changes' : `Proposed ${madeProposals} sets of changes`);
+  const failedProposals = proposals.filter((c) => c.result && !c.result.ok).length;
+  if (failedProposals > 0) parts.push(failedProposals === 1 ? 'A proposal was refused' : `${failedProposals} proposals were refused`);
+  const others = round.calls.length - searches.length - fetches.length - proposals.length;
   if (others > 0) parts.push(`${others} other tool ${others === 1 ? 'call' : 'calls'}`);
   if (round.calls.some((c) => c.result?.limit)) parts.push('limit reached');
   if (round.calls.some((c) => !c.result)) parts.push('working…');
@@ -311,6 +339,7 @@ function ToolRoundView({ round }: { round: ToolRound }) {
           ))}
         </ul>
       </details>
+      {round.calls.flatMap((c) => (c.result?.proposalId ? [card(c.result.proposalId)] : []))}
     </>
   );
 }

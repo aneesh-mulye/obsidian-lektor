@@ -44,6 +44,8 @@ function context(approvals: boolean[] = [], known = new KnownUrls()): ToolContex
   return {
     signal: new AbortController().signal,
     knownUrls: known,
+    editable: new Set<string>(),
+    model: null,
     asked,
     approve: (req) => {
       asked.push(req.detail);

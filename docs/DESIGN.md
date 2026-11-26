@@ -241,7 +241,9 @@ Models never edit; they emit **proposals**, and the user accepts or rejects each
 
 **Proposal format.** The model calls `propose_edit({path, edits: [{find, replace, reason?}]})`. `find` must match the note's current text exactly once; the plugin computes hunks from the result with a word-aware diff (`diff-match-patch` with semantic cleanup, or `jsdiff` word mode). Ambiguous or missing `find` strings are returned to the model as a tool error so it can retry. For backends without tool calling, the same JSON is accepted inside a fenced ```` ```lektor-edit ```` block in the reply.
 
-Creating a new note is a separate `propose_note({path, content})` with its own approval card. Proposals may only target notes currently in context.
+Creating a new note is a separate `propose_note({path, content})` with its own approval card. Proposals may only target notes currently in context: notes whose text was sent (chips, link depth, folders, backlink contents) and notes the user shared a selection from.
+
+**Hunks.** Each `find`/`replace` pair is diffed word by word; changes only a word or two apart merge, so a hunk reads as a phrase. A hunk never spans two of the model's edits and carries that edit's reason. To accept a hunk, Lektor finds the edit's text (with its already-accepted hunks applied) in the current note; it must occur exactly once, or the hunk is blocked as a conflict until rebased. A proposal is stored as the model's own `find`/`replace` text plus hunk offsets, so it adds no note text to chat history beyond what the model already wrote.
 
 **Display modes** (global setting, switchable per chat from the header):
 
@@ -416,6 +418,7 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
 - *(2026-11-26)* Reopening a chat restores its chips from the stored manifest and reads them fresh. Deleted or newly excluded notes are dropped with a notice, and notes changed since they were last sent are marked. Selections are stored as a note path, character range and hash, never as text, and are dropped if the text has changed.
 - *(2026-11-26, before milestone 4)* `fetch_page` approval follows URL provenance (see Tools framework): known URLs run freely, others need an approval card.
 - *(2026-11-26)* Replies and the model's thinking are chat text and are kept in history, where they may quote notes; the privacy settings say so, and when a note is deleted Lektor offers to delete the chats that sent it (found through their context manifests).
+- *(2026-11-26, before milestone 5)* Hunks are phrases within each edit (see Edits and diff review); selection sources are editable; `propose_note` ships with milestone 5 (created only on a click; path new, Markdown, not excluded; reverting moves it to the trash, only if unchanged since); when a note is deleted, the same notice that offers to delete chats also offers to clear its AI edit history.
 - *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.

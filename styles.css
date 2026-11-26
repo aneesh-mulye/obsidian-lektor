@@ -195,6 +195,128 @@
   margin-top: var(--size-4-2);
 }
 
+/* Review */
+
+.lektor-proposal {
+  margin: var(--size-4-2) 0;
+  padding: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-small);
+}
+
+.lektor-proposal-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-2);
+}
+
+.lektor-proposal-count {
+  color: var(--text-muted);
+}
+
+.lektor-proposal-all {
+  display: flex;
+  gap: var(--size-4-1);
+  margin-left: auto;
+}
+
+.lektor-link {
+  height: auto;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--link-color);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+
+.lektor-hunk {
+  padding: var(--size-4-1) 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.lektor-hunk-reason {
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: var(--size-2-1);
+}
+
+.lektor-hunk-body {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--size-4-1);
+}
+
+.lektor-hunk-text {
+  flex: 1 1 auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.lektor-hunk-context {
+  color: var(--text-muted);
+}
+
+.lektor-hunk-text del,
+.lektor-history-modal del {
+  color: var(--text-error);
+  text-decoration: line-through;
+  background: rgba(var(--color-red-rgb), 0.12);
+}
+
+.lektor-hunk-text ins,
+.lektor-history-modal ins {
+  color: var(--text-success);
+  text-decoration: underline;
+  background: rgba(var(--color-green-rgb), 0.12);
+}
+
+.lektor-hunk.is-accepted,
+.lektor-hunk.is-rejected {
+  opacity: 0.6;
+}
+
+.lektor-hunk.is-conflict {
+  border-left: 2px solid var(--color-orange);
+  padding-left: var(--size-4-1);
+}
+
+.lektor-hunk-actions {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.lektor-hunk-status {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+
+.lektor-hunk-problem {
+  color: var(--color-orange);
+  margin-top: var(--size-2-1);
+}
+
+.lektor-note-preview {
+  max-height: 16em;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: var(--font-ui-smaller);
+}
+
+.lektor-history-entry {
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: var(--size-4-2);
+}
+
+.lektor-history-entry-head {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
 /* History */
 
 .lektor-history {

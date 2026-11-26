@@ -8,7 +8,7 @@ Stateful tests use `fc.commands(…, { size: 'large' })`. With the default size,
 
 Every invariant's test has been mutation-checked: each guard in the code was removed in turn, and the test had to fail. Mutants that survived led to stronger generators or extra tests. The remaining survivors are equivalent (redundant code that changes no behaviour).
 
-Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk); "normalises -0 to 0, on load and on update" (S2, seed 1865398749 in a CI-strength run: `-0` was stored as `-0` but saved as `0`). `tests/core/ndjson.property.test.ts` › "returns exactly JSON.parse of each line, -0 included" (N1, seed 316671435: the test's model compared against the in-memory `-0` instead of what JSON puts on the wire; the decoder was right).
+Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk); "normalises -0 to 0, on load and on update" (S2, seed 1865398749 in a CI-strength run: `-0` was stored as `-0` but saved as `0`). `tests/core/ndjson.property.test.ts` › "returns exactly JSON.parse of each line, -0 included" (N1, seed 316671435: the test's model compared against the in-memory `-0` instead of what JSON puts on the wire; the decoder was right). `tests/core/ollama.property.test.ts` › "sends tool-call arguments as JSON (so -0 becomes 0)" (O2, full-suite run, seed not captured: the same `-0` model mistake, in tool-call arguments). `tests/core/review.property.test.ts` › "reverting a change that emptied the note puts the text back" (W3–W5, seed -1474712944: correct behaviour; the checker treated the empty anchor of an emptied note as "not found").
 
 ---
 
@@ -383,18 +383,94 @@ On 2026-11-26, in the same kind of separate instance, with `qwen3.8:27b` and the
 
 The user's own Obsidian profile was unchanged before and after.
 
+## Milestone 5: Review (sidebar diff)
+
+Shared generator, the **edit world**: a few notes with random Unicode text (repeated phrases, so `find` strings can be ambiguous), a context saying which notes are editable, and an in-memory vault behind the `EditApplier` interface that records every write.
+
+### W1. Hunk algebra (design invariant 4) — active
+
+`tests/core/hunks.property.test.ts`
+
+- **Generator:** any `find` and `replace` text (words, punctuation, whitespace runs, newlines, emoji, CJK), including near-identical pairs and empty replacements.
+- **Properties:**
+  - Hunks are sorted, never overlap, and never cover an unchanged run of three or more words (phrase merging).
+  - Accepting all hunks yields `replace`; accepting none yields `find`.
+  - Accepting a subset and then the rest equals accepting all.
+  - Accepting any set of hunks in any order gives the same text.
+- **Counterexample means:** what you accept differs from what you were shown.
+
+### W2. Proposal validation (design invariant 8) — active
+
+`tests/core/review.property.test.ts`
+
+- **Generator:** `propose_edit` arguments with `find` strings that occur zero times, once or several times; overlapping and adjacent edits; empty `find`; no-op edits; paths outside the context, excluded, missing or malformed; and garbage arguments.
+- **Property:** a proposal is created only if the path is editable (in context) and every edit's `find` occurs exactly once in the note's current text, with no two edits overlapping and at least one real change. Otherwise the model gets a tool error and no proposal exists. Valid proposals' hunks reproduce the model's edits exactly.
+- **Counterexample means:** a proposal points at the wrong place, or at a note the model was never given.
+
+### W3. No write without accept (design invariant 3; stateful) — active
+
+`tests/core/review.property.test.ts`, `fc.commands`
+
+- **Generator:** the edit world, plus random sequences of proposals (valid and adversarial), accept, reject, accept all, reject all, user typing anywhere in a note (including inside a hunk's passage), reverts from the AI history, `propose_note` cards (create or dismiss), and renames.
+- **Property:**
+  - The vault changes only on accept, create or revert actions.
+  - Each change replaces exactly one hunk's `before` with its `after` (or the reverse, for a revert) at a single location, and every other character of the note is untouched.
+  - A hunk whose passage no longer matches exactly once is reported as a conflict and changes nothing.
+  - An accepted or rejected hunk can't be applied again.
+- **Counterexample means:** the vault changed without the user's say-so, or by more than they accepted (hard rule 1).
+
+### W4. Undo safety (design invariant 6) — active
+
+`tests/core/review.property.test.ts`
+
+- **Generator:** accepted hunks, then random user edits (none, elsewhere, touching the hunk, deleting it), then a revert.
+- **Property:** with no edits since, a revert restores the earlier text exactly. Otherwise it either reverses that one hunk where its surroundings still identify it uniquely, or reports a conflict and changes nothing. It never corrupts the surrounding text.
+- **Counterexample means:** undo damages the note.
+
+### W5. History completeness (design invariant 7) — active
+
+`tests/core/review.property.test.ts`
+
+- **Property:** the AI edit log only ever grows. Every accepted hunk, created note and revert has exactly one entry, and it is filed under the note's id. That id follows renames, so a renamed note keeps its history. Clearing (per note or all) removes exactly what was asked, and only that.
+- **Counterexample means:** an AI edit happened with no record, or a record went missing.
+
+### W6. `propose_note` creates only what was approved — active
+
+`tests/core/review.property.test.ts`
+
+- **Generator:** random proposed paths: new, existing, excluded, hidden, `..`, not Markdown, overlong; random content.
+- **Property:** a note card exists only for a new, allowed Markdown path. The note is created only by Create, with exactly the proposed content. Reverting a created note moves it to the trash only if its text is unchanged since; otherwise it reports a conflict.
+
+### G8. Only ReviewController writes, and only these ways — active
+
+`tests/lint/review-controller.test.ts`
+
+- **Property:** `src/obsidian/ReviewController.ts` writes only through `vault.process`, `vault.create`, `fileManager.trashFile` and `editor.replaceRange`, and every one of those calls sits inside a method reached from an accept, create or revert action. This is checked by reading the source, as a backstop to G3.
+
+### Checked in a real Obsidian (milestone 5)
+
+On 2026-11-26, in a separate instance, with `qwen3.8:27b` proofreading `fixtures/vault/Drafts/Essay.md`:
+
+- **Tools offered:** `fetch_page`, `propose_edit` and `propose_note` (search was off).
+- **The proposal:** three hunks, each with its reason: the doubled "The the", "it's … their" → "its … there", and "fourty" → "forty". The file on disk was unchanged before any click.
+- **Accept and reject:** accepting the first hunk and rejecting the second changed the file to exactly the original with "The the lighthouse" → "The lighthouse". The note was open, so the change went through the editor.
+- **History and revert:** the AI edit history showed the change, and Revert restored the file byte for byte. The log kept both entries.
+- **New note:** `propose_note` showed a card. No file existed until Create, and then the file held exactly the proposed text.
+
+Note for future runs: the test instance had a stray Obsidian Settings window open, and Obsidian opens modals in the focused window. Close it, or focus the main window, before checking for modals.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.
 
 1. **Context containment:** active for milestone 3's sources as X2; extended to `request_context` and attachments in M7.
 2. **Backlink lists carry no content:** active as X3.
-3. **No write without accept:** planned (M5).
-4. **Hunk algebra:** planned (M5).
+3. **No write without accept:** active as W3.
+4. **Hunk algebra:** active as W1.
 5. **Rebase honesty:** planned (M6).
-6. **Undo safety:** planned (M5).
-7. **History completeness:** planned (M5).
-8. **Proposal validation:** planned (M5).
+6. **Undo safety:** active as W4.
+7. **History completeness:** active as W5.
+8. **Proposal validation:** active as W2.
 9. **Caps hold:** active as T2.
 10. **Lockdown flags are unconditional:** planned (M10, M11).
 11. **Preset parsing is total:** planned (M8).

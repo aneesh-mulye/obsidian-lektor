@@ -4,6 +4,7 @@
 import type { ContextManifest } from '../context/prepare';
 import type { ContextState } from '../context/state';
 import type { Capabilities, ChatProvider, ModelRef, ToolCall, ToolDefinition } from '../providers/types';
+import type { Proposal } from '../review/types';
 import type { ApprovalRequest, StepResult } from '../tools/types';
 
 export type ReplyStatus = 'streaming' | 'complete' | 'stopped' | 'truncated' | 'error';
@@ -49,6 +50,8 @@ export interface AssistantMessage {
   readonly notice?: string;
   /** Tool rounds before the final answer (`content`). */
   readonly steps?: readonly ToolRound[];
+  /** Proposals made through fenced `lektor-edit` blocks in this reply (models without tool calling). */
+  readonly fencedProposals?: readonly string[];
   /** An approval the reply is waiting for (never saved). */
   readonly approval?: { readonly id: string } & ApprovalRequest;
 }
@@ -68,17 +71,33 @@ export interface Chat {
   readonly sentContext?: Readonly<Record<string, string>>;
   /** The per-chat tools switch (the globe); tools are on unless this is true. */
   readonly toolsDisabled?: boolean;
+  /** Proposals made in this chat, by id; their cards appear where the model made them. */
+  readonly proposals?: Readonly<Record<string, Proposal>>;
 }
 
 /** The tools available to one reply: definitions to offer, and a way to run calls. One per user message. */
 export interface ToolRun {
   definitions: ToolDefinition[];
   execute(call: ToolCall, signal: AbortSignal, approve: (request: ApprovalRequest) => Promise<boolean>): Promise<StepResult>;
+  /**
+   * For models without tool calling: instructions for proposing edits in fenced
+   * `lektor-edit` blocks, and a way to turn a finished reply's blocks into proposals.
+   */
+  fenced?: {
+    instructions: string;
+    extract(reply: string): Promise<{ proposals: Proposal[]; problems: string[] }>;
+  };
 }
 
 export interface ToolsDeps {
   /** Null when this chat or model gets no tools. */
-  forReply(input: { chat: Chat; capabilities: Capabilities; contextUrls: readonly string[] }): ToolRun | null;
+  forReply(input: {
+    chat: Chat;
+    capabilities: Capabilities;
+    contextUrls: readonly string[];
+    /** Notes in this reply's context, which the model may propose edits to. */
+    editable: readonly string[];
+  }): ToolRun | null;
 }
 
 export interface Clock {

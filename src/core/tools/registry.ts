@@ -71,7 +71,13 @@ export class ToolRegistry {
 
     try {
       const out = await tool.run(parsed.data, ctx);
-      return { ok: true, content: out.content, summary: out.summary, ...(out.urls ? { urls: out.urls } : {}) };
+      return {
+        ok: true,
+        content: out.content,
+        summary: out.summary,
+        ...(out.urls ? { urls: out.urls } : {}),
+        ...(out.proposal ? { proposal: out.proposal, proposalId: out.proposal.id } : {}),
+      };
     } catch (err) {
       if (ctx.signal.aborted) return fail('Stopped by the user.', `${tool.name}: stopped`);
       const message = err instanceof ToolError ? err.message : `${tool.name} failed: ${err instanceof Error ? err.message : 'unknown error'}`;

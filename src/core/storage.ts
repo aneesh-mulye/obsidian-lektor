@@ -12,6 +12,8 @@
 export const STORAGE_NAMESPACES = {
   chats: '.json',
   history: '.jsonl',
+  /** Small bookkeeping files, e.g. the AI edit log's note-id index. */
+  meta: '.json',
 } as const;
 
 export type StorageNamespace = keyof typeof STORAGE_NAMESPACES;

@@ -16,6 +16,11 @@ import { ToolRegistry } from './core/tools/registry';
 import { toolRuns } from './core/tools/run';
 import { searchProvider } from './core/tools/search';
 import { type SearchSetup, fetchPageTool, webSearchTool } from './core/tools/web';
+import { EditLog } from './core/review/log';
+import { ReviewManager } from './core/review/manager';
+import { fencedEdits, proposeEditTool, proposeNoteTool } from './core/review/tools';
+import { EditHistoryModal } from './obsidian/EditHistoryModal';
+import { ReviewController } from './obsidian/ReviewController';
 import { LektorView, VIEW_TYPE_LEKTOR } from './obsidian/LektorView';
 import { FolderPicker, NotePicker } from './obsidian/Pickers';
 import { PluginStorage } from './obsidian/PluginStorage';
@@ -23,6 +28,8 @@ import { LektorSettingTab } from './obsidian/SettingsTab';
 import type { ContextUi } from './obsidian/ui/ContextBar';
 
 export default class LektorPlugin extends Plugin {
+  editLog!: EditLog;
+  private review!: ReviewManager;
   // Not `settings`: Obsidian 1.13+ declares Plugin.settings for raw loaded data.
   settingsStore: SettingsStore = SettingsStore.load(null);
   ollama!: OllamaProvider;
@@ -61,14 +68,40 @@ export default class LektorPlugin extends Plugin {
         auth: { ...(key ? { key } : {}), ...(t.searxngUrl ? { baseUrl: t.searxngUrl } : {}) },
       };
     };
+    const storage = new PluginStorage(this.app, this.manifest.dir);
+    const history = new ChatHistory(storage);
+    const newId = () => crypto.randomUUID();
+
+    // Review (DESIGN.md § Edits and diff review): models propose; only a click applies, through ReviewController.
+    const editLog = new EditLog(storage, newId);
+    this.editLog = editLog;
+    const review = new ReviewManager({
+      applier: new ReviewController(this.app),
+      log: editLog,
+      readNote: (path) => this.broker.index.read(path),
+      clock: { now: () => Date.now() },
+    });
+    this.review = review;
+    const reviewDeps = {
+      readNote: (path: string) => this.broker.index.read(path),
+      isExcluded: (path: string) => this.broker.index.isExcluded(path),
+      exists: (path: string) => this.broker.exists(path),
+      newId,
+      now: () => Date.now(),
+    };
+
     const registry = new ToolRegistry();
     registry.register(webSearchTool(searchSetup, toolHttp));
     registry.register(fetchPageTool(toolHttp, readabilityExtractor, () => settings().tools.fetchMaxTokens));
+    registry.register(proposeEditTool(reviewDeps));
+    registry.register(proposeNoteTool(reviewDeps));
     const tools = toolRuns(registry, {
-      enabledNames: () => [...(settings().tools.searchProvider !== 'none' ? ['web_search'] : []), 'fetch_page'],
+      webNames: () => [...(settings().tools.searchProvider !== 'none' ? ['web_search'] : []), 'fetch_page'],
+      // Prose mode describes changes in words, so no edit tools (DESIGN.md § Display modes).
+      reviewNames: () => (settings().review.defaultDisplayMode === 'prose' ? [] : ['propose_edit', 'propose_note']),
       limits: () => ({ searches: settings().tools.searchesPerMessage, fetches: settings().tools.fetchesPerMessage }),
+      fenced: (editable, model) => fencedEdits(reviewDeps, editable, model),
     });
-    const history = new ChatHistory(new PluginStorage(this.app, this.manifest.dir));
 
     this.chats = new ChatManager({
       providers: { get: (id) => byId.get(id) },
@@ -102,8 +135,9 @@ export default class LektorPlugin extends Plugin {
       (from, to) => {
         this.broker.refresh();
         context.renamed(from, to);
+        void editLog.renamed(from, to);
       },
-      (path) => void this.offerChatCleanup(history, path),
+      (path) => void this.offerCleanup(history, editLog, path),
     );
     this.app.workspace.onLayoutReady(() => {
       this.broker.refresh();
@@ -180,6 +214,7 @@ export default class LektorPlugin extends Plugin {
           clearAllChats,
           context: contextUi,
           searchConfigured: () => settings().tools.searchProvider !== 'none',
+          review: { manager: review, openNote: (path) => void this.app.workspace.openLinkText(path, '', false) },
         }),
     );
     this.addRibbonIcon('message-square', 'Open Lektor', () => void this.activateView());
@@ -205,6 +240,17 @@ export default class LektorPlugin extends Plugin {
     this.addCommand({ id: 'add-current-note', name: 'Add current note to context', callback: () => context.addActiveNote() });
     this.addCommand({ id: 'add-note', name: 'Add note to context…', callback: () => pickNote() });
     this.addCommand({ id: 'add-folder', name: 'Add folder to context…', callback: pickFolder });
+    const showHistory = (path: string | null) => {
+      if (path === null) notice('Open a note first.');
+      else new EditHistoryModal(this.app, path, editLog, review).open();
+    };
+    this.addCommand({ id: 'show-ai-history', name: 'Show AI edit history for this note', callback: () => showHistory(this.broker.activeNote()) });
+    this.registerEvent(
+      this.app.workspace.on('file-menu', (menu, file) => {
+        if (!file.path.toLowerCase().endsWith('.md')) return;
+        menu.addItem((item) => item.setTitle('Lektor: AI edit history').setIcon('history').onClick(() => showHistory(file.path)));
+      }),
+    );
     this.addSettingTab(new LektorSettingTab(this.app, this));
   }
 
@@ -224,29 +270,53 @@ export default class LektorPlugin extends Plugin {
   }
 
   /**
-   * A note was deleted. Replies may have quoted it, so offer to delete the chats that sent it
-   * (DESIGN.md § Decided since the first draft).
+   * A note was deleted. Replies may have quoted it, and the AI edit history holds text from it,
+   * so offer to delete the chats that sent it and to clear its edit history (DESIGN.md § Decided).
    */
-  private async offerChatCleanup(history: ChatHistory, path: string): Promise<void> {
+  private async offerCleanup(history: ChatHistory, editLog: EditLog, path: string): Promise<void> {
     const ids = await history.chatsSending(path);
-    if (ids.length === 0) return;
-    const what = ids.length === 1 ? '1 chat' : `${ids.length} chats`;
+    const hasLog = await editLog.hasHistory(path);
+    if (ids.length === 0 && !hasLog) return;
+    const chats = ids.length === 1 ? '1 chat' : `${ids.length} chats`;
     const fragment = createFragment((f) => {
-      f.appendText(`Lektor: ${what} sent ${path} to a model, and its replies may quote it. `);
-      const button = f.createEl('button', { text: `Delete ${what}…` });
-      button.onclick = () => {
-        void confirm(this.app, {
-          title: `Delete ${what}?`,
-          body: `These chats sent ${path} to a model. Deleting them removes any quotes of it from Lektor's history.`,
-          action: 'Delete',
-        }).then(async (ok) => {
-          if (!ok) return;
-          for (const id of ids) await this.chats.delete(id);
-          new Notice(`Lektor: deleted ${what}.`);
-        });
-      };
+      f.appendText(`Lektor: ${path} was deleted. `);
+      if (ids.length > 0) {
+        f.appendText(`${chats} sent it to a model, and replies may quote it. `);
+        const button = f.createEl('button', { text: `Delete ${chats}…` });
+        button.onclick = () => {
+          void confirm(this.app, {
+            title: `Delete ${chats}?`,
+            body: `These chats sent ${path} to a model. Deleting them removes any quotes of it from Lektor's chat history.`,
+            action: 'Delete',
+          }).then(async (ok) => {
+            if (!ok) return;
+            for (const id of ids) await this.chats.delete(id);
+            new Notice(`Lektor: deleted ${chats}.`);
+          });
+        };
+      }
+      if (hasLog) {
+        f.appendText(' Its AI edit history holds text from it. ');
+        const button = f.createEl('button', { text: 'Clear its edit history…' });
+        button.onclick = () => {
+          void confirm(this.app, {
+            title: 'Clear AI edit history?',
+            body: `This deletes the record of every change Lektor made to ${path}.`,
+            action: 'Clear',
+          }).then(async (ok) => {
+            if (!ok) return;
+            await editLog.clear(path);
+            new Notice('Lektor: edit history cleared.');
+          });
+        };
+      }
     });
     new Notice(fragment, 20000);
+  }
+
+  /** Clear all AI edit history (settings button, after confirmation). */
+  async clearEditHistory(): Promise<void> {
+    await this.editLog.clearAll();
   }
 
   /** For the settings tab's connection check. */

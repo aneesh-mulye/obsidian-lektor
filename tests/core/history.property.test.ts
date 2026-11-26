@@ -135,8 +135,29 @@ const chat = (chatId: string): fc.Arbitrary<Chat> =>
       messages: fc.array(message, { maxLength: 5 }),
       context: fc.record({ followActive: fc.boolean(), chips: fc.array(chip, { maxLength: 4 }) }),
       sentContext: fc.option(fc.dictionary(fc.string(), fc.oneof(text, fc.constant(`ctx ${SECRET}`)), { maxKeys: 3 }), { nil: undefined }),
+      proposals: fc.option(
+        fc.dictionary(
+          fc.string({ minLength: 1 }),
+          fc.oneof(
+            fc.record({
+              kind: fc.constant('edit' as const),
+              id: fc.string(),
+              path: fc.string(),
+              edits: fc.array(fc.record({ find: text, replace: text, reason: fc.string() }, { requiredKeys: ['find', 'replace'] }), { maxLength: 2 }),
+              anchors: fc.array(fc.nat(), { maxLength: 2 }),
+              expect: fc.string(),
+              hunks: fc.array(fc.record({ id: fc.string(), edit: fc.nat(), start: fc.nat(), end: fc.nat(), after: text, status: fc.constantFrom('pending' as const, 'accepted' as const, 'rejected' as const) }), { maxLength: 3 }),
+              createdAt: fc.nat(),
+              model: ref,
+            }),
+            fc.record({ kind: fc.constant('note' as const), id: fc.string(), path: fc.string(), content: text, status: fc.constantFrom('pending' as const, 'created' as const, 'dismissed' as const), createdAt: fc.nat(), model: ref }),
+          ),
+          { maxKeys: 2 },
+        ),
+        { nil: undefined },
+      ),
     })
-    .map(({ sentContext, ...c }) => (sentContext === undefined ? c : { ...c, sentContext }));
+    .map(({ sentContext, proposals, ...c }) => ({ ...c, ...(sentContext === undefined ? {} : { sentContext }), ...(proposals === undefined ? {} : { proposals }) }));
 
 /** What a load gives back: mid-stream replies as stopped; selection text and "changed" marks never stored. */
 const normalised = (c: Chat): Chat => ({

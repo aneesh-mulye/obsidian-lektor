@@ -58,6 +58,7 @@ const AssistantMessage = z.strictObject({
                 summary: z.string(),
                 limit: z.boolean().optional(),
                 urls: z.array(z.string()).optional(),
+                proposalId: z.string().optional(),
               })
               .optional(),
           }),
@@ -65,7 +66,40 @@ const AssistantMessage = z.strictObject({
       }),
     )
     .optional(),
+  fencedProposals: z.array(z.string()).optional(),
 });
+
+const Proposal = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('edit'),
+    id: z.string(),
+    path: z.string(),
+    edits: z.array(z.strictObject({ find: z.string(), replace: z.string(), reason: z.string().optional() })),
+    anchors: z.array(z.number()),
+    expect: z.string(),
+    hunks: z.array(
+      z.strictObject({
+        id: z.string(),
+        edit: z.number(),
+        start: z.number(),
+        end: z.number(),
+        after: z.string(),
+        status: z.enum(['pending', 'accepted', 'rejected']),
+      }),
+    ),
+    createdAt: z.number(),
+    model: ModelRefSchema,
+  }),
+  z.strictObject({
+    kind: z.literal('note'),
+    id: z.string(),
+    path: z.string(),
+    content: z.string(),
+    status: z.enum(['pending', 'created', 'dismissed']),
+    createdAt: z.number(),
+    model: ModelRefSchema,
+  }),
+]);
 
 /** Chips as stored: selections are a path, range and hash, never text (INVARIANTS.md H4). */
 const ChipRecord = z.discriminatedUnion('kind', [
@@ -104,6 +138,7 @@ const ChatV2 = ChatV1.extend({
   context: ContextRecord,
   sentContext: z.record(z.string(), z.string()).optional(),
   toolsDisabled: z.boolean().optional(),
+  proposals: z.record(z.string(), Proposal).optional(),
 });
 
 const FileSchema = z.discriminatedUnion('version', [

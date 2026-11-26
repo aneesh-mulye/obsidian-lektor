@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { type App, Notice, type Plugin, PluginSettingTab, SecretComponent, Setting } from 'obsidian';
+import { confirm } from './ConfirmModal';
 import {
   type AttachmentMode,
   type DisplayMode,
@@ -28,6 +29,8 @@ export interface SettingsHost extends Plugin {
   checkOllama(): Promise<string>;
   /** Exclusion or link-depth settings changed. */
   contextSettingsChanged(): void;
+  /** Delete all AI edit history. */
+  clearEditHistory(): Promise<void>;
 }
 
 const DISPLAY_LABELS: Record<DisplayMode, string> = {
@@ -287,6 +290,26 @@ export class LektorSettingTab extends PluginSettingTab {
           .addOptions(DISPLAY_LABELS)
           .setValue(s.review.defaultDisplayMode)
           .onChange((value) => void this.apply({ review: { defaultDisplayMode: value as DisplayMode } })),
+      );
+
+    new Setting(containerEl)
+      .setName('AI edit history')
+      .setDesc('Every change you accept is logged per note (Lektor: AI edit history, in a note’s menu), so you can revert it later. The log keeps the changed text.')
+      .addButton((button) =>
+        button
+          .setButtonText('Clear all…')
+          .setWarning()
+          .onClick(() => {
+            void confirm(this.app, {
+              title: 'Clear all AI edit history?',
+              body: 'This deletes the record of every change Lektor made to any note. Your notes are not changed. It cannot be undone.',
+              action: 'Clear all',
+            }).then(async (ok) => {
+              if (!ok) return;
+              await this.host.clearEditHistory();
+              new Notice('Lektor: AI edit history cleared.');
+            });
+          }),
       );
 
     // Privacy

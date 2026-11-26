@@ -4,6 +4,8 @@
 /** Tools (DESIGN.md § Tools framework). Adding one is one file and one registration line. */
 
 import type { z } from 'zod';
+import type { ModelRef } from '../providers/types';
+import type { Proposal } from '../review/types';
 import type { KnownUrls } from './urls';
 
 export type ToolApproval = 'never' | 'ask' | 'per-session';
@@ -22,6 +24,10 @@ export interface ToolContext {
   knownUrls: KnownUrls;
   /** Show an approval card and wait for the user. */
   approve(request: ApprovalRequest): Promise<boolean>;
+  /** Notes the model may propose edits to: those in this reply's context (DESIGN.md § Edits). */
+  editable: ReadonlySet<string>;
+  /** The model this reply comes from. */
+  model: ModelRef | null;
 }
 
 export interface ToolOutcome {
@@ -31,6 +37,8 @@ export interface ToolOutcome {
   summary: string;
   /** URLs this result makes known (search results). */
   urls?: string[];
+  /** A proposal for the user to review (propose_edit, propose_note). */
+  proposal?: Proposal;
 }
 
 export interface Tool<A = unknown> {
@@ -59,4 +67,8 @@ export interface StepResult {
   /** The call was refused because a per-message cap was reached. */
   limit?: boolean;
   urls?: string[];
+  /** The proposal this call made, kept in the chat (`Chat.proposals`). */
+  proposalId?: string;
+  /** Only in flight: the session moves it into the chat and keeps `proposalId`. */
+  proposal?: Proposal;
 }

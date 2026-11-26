@@ -92,6 +92,11 @@ export class ContextBroker {
     );
   }
 
+  /** Whether any file or folder exists at the path (for refusing new-note proposals that would collide). */
+  exists(path: string): boolean {
+    return this.app.vault.getAbstractFileByPath(path) !== null;
+  }
+
   /** The note open in the editor, or the most recently open one when the sidebar has focus. */
   activeNote(): string | null {
     return this.app.workspace.getActiveFile()?.path ?? null;
