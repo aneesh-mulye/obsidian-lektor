@@ -119,21 +119,22 @@ interface ChatProvider {
 
 **On OpenCode for Ollama search:** not needed. Lektor's own tool loop gives any tool-calling local model search directly, which is simpler than running another agent as a bridge. OpenCode can be added later as a sixth adapter if wanted.
 
-**Claude Code lockdown.** Run in an empty plugin-owned folder (`<plugin data>/void/`, recreated empty each session) with:
+**Claude Code lockdown.** Run in a fresh, empty folder outside the vault (`<system temp>/lektor-<random>/void/`, removed after each run) with (verified against Claude Code 2.1.332; see Decided, before milestone 10):
 
 ```
-claude -p --safe-mode --input-format stream-json --output-format stream-json \
-  --verbose --include-partial-messages --no-session-persistence \
-  --tools "WebSearch,WebFetch" --allowedTools "WebSearch" "WebFetch" \
-  --permission-mode dontAsk --strict-mcp-config --mcp-config <lektor.json> \
-  --disable-slash-commands --system-prompt-file <preset prompt> --model <alias>
+claude -p --input-format stream-json --output-format stream-json --verbose \
+  --include-partial-messages --no-session-persistence \
+  --setting-sources "" --restricted --strict-mcp-config --mcp-config <run>/mcp.json \
+  --permission-mode dontAsk --permission-prompts none --disable-slash-commands \
+  --tools "WebSearch,WebFetch" --allowedTools WebSearch WebFetch mcp__lektor__<tool>… \
+  --system-prompt-file <run>/system.txt --model <alias>
 ```
 
-- `--safe-mode`: CLAUDE.md, skills, plugins, hooks, MCP servers and memory do not load ([CLI reference](https://code.claude.com/docs/en/cli-reference)).
-- `--tools`: only the two web tools exist; no Bash, Read, Edit, Glob or Grep.
+- `--setting-sources ""` and `--restricted`: no user, project or local settings, hooks or plugins load. (`--safe-mode` would also do this, but it drops `--mcp-config` servers too, so Lektor's tools would vanish.)
+- `--tools`: only the two web tools exist; no Bash, Read, Edit, Glob or Grep. With Lektor fetching pages (a setting), only `WebSearch`; with the globe off, `""`.
 - `--strict-mcp-config`: only Lektor's MCP server, never the user's.
-- `--permission-mode dontAsk` + `--allowedTools`: anything not allowed is denied rather than prompted.
-- Web search toggle off → `--tools ""`.
+- `--permission-mode dontAsk` + `--permission-prompts none` + `--allowedTools`: anything not allowed is denied rather than prompted.
+- The MCP config (with its per-run token) and the system prompt are files in the run folder, never in argv.
 
 **Codex lockdown.** Same empty folder, plus a plugin-owned `CODEX_HOME` holding only a symlink to the user's `auth.json`, so the user's `config.toml`, MCP servers and global `AGENTS.md` are not loaded:
 
@@ -328,7 +329,7 @@ One right-sidebar view, three stacked zones, nothing else on screen by default.
 | Chat history | `<plugin dir>/chats/<id>.json` | Messages, context manifest (paths + hashes, not content), tool calls, proposal outcomes |
 | Presets | `<plugin dir>/presets/*.md` | See Presets |
 | AI undo history | Plugin data, history/\<note-id>.jsonl (permanent) | Append-only; follows renames; cleared only on request |
-| CLI working folder | `<plugin dir>/void/` | Emptied before every CLI session; never inside the vault |
+| CLI working folder | `<system temp>/lektor-<random>/void/` | Fresh and empty for every run, removed afterwards; never inside the vault (decided before milestone 10) |
 | Codex home | `<plugin dir>/codex-home/` | Only a symlink to `~/.codex/auth.json` |
 
 **Privacy guarantees**
@@ -401,7 +402,7 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
 
 | Risk | Why it matters | Mitigation or check |
 | --- | --- | --- |
-| `--safe-mode` may also block `--mcp-config` | Claude Code would lose Lektor's tools | Test first. If blocked: drop `--safe-mode`, keep `--strict-mcp-config` and `--setting-sources` empty; or use the fenced-block protocol for CLI backends |
+| `--safe-mode` may also block `--mcp-config` | Claude Code would lose Lektor's tools | Confirmed on 2.1.332: it does. `--safe-mode` is not used; `--setting-sources ""` and `--restricted` keep settings, hooks and plugins out instead (Decided, before milestone 10) |
 | `--tools ""` once failed to disable tools (closed as resolved April 2026) | Rule 2 | The lockdown self-test catches it on every CLI version |
 | Isolated `CODEX_HOME` with a symlinked `auth.json` may not keep the session signed in, or token refresh may write back elsewhere | Codex bridge fails to start | Test on the installed version; fall back to the user's `CODEX_HOME` with every feature and MCP server overridden by `-c` flags |
 | Codex may gain a non-shell file tool in a future version | Rule 2 | Self-test, plus snapshot tests of flags; review Codex release notes when upgrading |
@@ -446,6 +447,19 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
   - Both adapters speak raw HTTP through the single network file. Replies stream through `fetch`; a server that refuses Obsidian's origin (CORS) gets the request once through `requestUrl`, which doesn't stream, and the reply says so.
   - Capabilities come from endpoint settings, overridden by whatever the server reports (Anthropic's model list, vLLM, LM Studio, llama.cpp).
   - Claude's signed thinking blocks are sent back unchanged within a reply's tool loop, in memory only.
+- *(2026-11-27, before milestone 10)* The Claude Code bridge.
+  - **Principle:** with local models the user expects total control; with Claude Code and Codex they expect what those apps' own chat gives them, the model searching and fetching on its own. So Claude Code uses its own WebSearch and WebFetch by default. The chat shows plainly that Claude Code did the searching and fetching (the globe's tooltip, and "Claude Code searched / fetched" lines in the reply). A setting switches fetching to Lektor's `fetch_page`, served over the loopback MCP server, which asks before fetching URLs that didn't come from a search, the user's messages or attached notes.
+  - **Working folder:** a fresh, empty folder under the system temp directory for every run (`lektor-<random>/void`), removed afterwards. It is never inside the vault: Claude Code looks upward from its working folder for CLAUDE.md/AGENTS.md, and a relative path from inside `.obsidian` would lead to the notes. This replaces `<plugin dir>/void/`.
+  - **Written for Lektor, not lifted:** the spawner and the loopback MCP endpoint are Lektor's own (LLM Hub's Claude call sets no tool restrictions). THIRD_PARTY.md is unchanged.
+  - **One process per reply:** stream-json input answers every user line as a new turn, so earlier turns can't be replayed as history. Each reply starts a fresh `claude -p` with `--no-session-persistence`. Its system-prompt file holds Lektor's instructions and the context; stdin carries one user message with the visible transcript and any images. Claude Code runs its own tool loop within the reply, calling Lektor's tools over MCP.
+  - **The lockdown flags, as verified against Claude Code 2.1.332 on 2026-11-27:**
+    - `--safe-mode` also drops `--mcp-config` servers (checked: the init event listed no MCP servers), so it is not used. In its place, `--setting-sources ""` and `--restricted` together keep user, project and local settings, hooks and plugins out. Checked: a project hook that injected a code word reached the model without them, and not with either one.
+    - Neither CLAUDE.md nor AGENTS.md above or inside the working folder reached the model with these flags.
+    - `--permission-prompts none` denies anything that would prompt.
+    - `--system-prompt-file` works, though `--help` doesn't list it.
+    - stream-json input accepts image blocks.
+    - The full list is in `src/core/cli/claude/args.ts`, guarded by a snapshot test (INVARIANTS.md L1).
+  - **Nothing private in the command line:** the MCP config (with its per-run token) and the system prompt go in files in the run folder (mode 0700), never in argv, which other local users can read.
 - *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.

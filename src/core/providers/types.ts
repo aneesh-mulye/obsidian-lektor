@@ -5,7 +5,10 @@
 
 export interface Capabilities {
   toolCalling: 'native' | 'mcp' | 'fenced' | 'none';
+  /** The backend searches the web itself (Claude Code); Lektor then offers no web_search. */
   nativeWebSearch: boolean;
+  /** The backend fetches pages itself; Lektor then offers no fetch_page. */
+  nativeWebFetch?: boolean;
   images: boolean;
   contextWindow: number;
 }
@@ -62,6 +65,26 @@ export interface ChatRequest {
   messages: ChatMessage[];
   /** Tools offered for this request; absent or empty means none. */
   tools?: ToolDefinition[];
+  /**
+   * For backends that call Lektor's tools themselves over MCP (toolCalling 'mcp'): the tools for this
+   * reply, run through the same registry, approvals and caps as native calls (INVARIANTS.md L6).
+   */
+  toolHost?: ToolHost;
+  /** For backends with their own web tools: whether they may search and fetch for this reply (the globe, a preset's tools). */
+  web?: { search: boolean; pages: boolean };
+}
+
+/** Lektor's tools for one reply, as an MCP backend calls them. Calls run one at a time. */
+export interface ToolHost {
+  definitions: ToolDefinition[];
+  call(name: string, args: unknown): Promise<ToolHostResult>;
+}
+
+export interface ToolHostResult {
+  content: string;
+  isError: boolean;
+  /** Images shared with the result (request_context), base64. */
+  images?: readonly ChatImage[];
 }
 
 export type DoneReason = 'stop' | 'length' | 'aborted' | 'error';
@@ -80,6 +103,8 @@ export type ChatEvent =
   | { type: 'replay'; data: unknown }
   /** Something the user should know about this reply (e.g. it could not be streamed). */
   | { type: 'notice'; message: string }
+  /** A tool the backend ran itself (Claude Code's own WebSearch), shown in the reply's steps. */
+  | { type: 'tool_activity'; call: ToolCall; result: { ok: boolean; content: string; summary: string; urls?: string[] } }
   | { type: 'error'; message: string }
   | { type: 'done'; reason: DoneReason };
 

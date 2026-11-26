@@ -55,8 +55,11 @@ function useRunnable(presets: PresetsUi | undefined): readonly Preset[] {
   return useMemo(() => presets?.library.runnable() ?? [], [presets, version]);
 }
 
-/** The model's capabilities (null while unknown). */
-function useCapabilities(providers: () => readonly ChatProvider[], model: ModelRef | null): Capabilities | null {
+/**
+ * The model's capabilities (null while unknown). Read again for each new chat and after each message,
+ * so a settings change (such as who fetches pages for Claude Code) shows in the header.
+ */
+function useCapabilities(providers: () => readonly ChatProvider[], model: ModelRef | null, refresh: string): Capabilities | null {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   useEffect(() => {
     let alive = true;
@@ -71,14 +74,14 @@ function useCapabilities(providers: () => readonly ChatProvider[], model: ModelR
     return () => {
       alive = false;
     };
-  }, [providers, model?.provider, model?.model]);
+  }, [providers, model?.provider, model?.model, refresh]);
   return caps;
 }
 
 export function Sidebar({ manager, providers, clearAllChats, context, searchConfigured, review, presets }: SidebarProps) {
   const { chat, busy } = useSyncExternalStore(manager.subscribe, manager.snapshot);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const caps = useCapabilities(providers, chat.model);
+  const caps = useCapabilities(providers, chat.model, `${chat.id}:${chat.messages.length}:${chat.toolsDisabled === true}`);
   const window = caps?.contextWindow ?? null;
   const runnable = useRunnable(presets);
   const start = presets ? (p: Preset, typed = '') => presets.starter.start(p, typed) : undefined;
@@ -166,7 +169,13 @@ const MODES: Record<DisplayMode, { title: string; icon: string }> = {
 function toolsState(on: boolean, caps: Capabilities | null, searchConfigured: boolean): { label: string; warn: boolean } {
   const next = ' Changes apply from your next message.';
   if (!on) return { label: `Tools off: no web search or page fetching.${next}`, warn: false };
-  if (caps && caps.toolCalling !== 'native') return { label: "Tools are on, but this model can't call tools.", warn: true };
+  // Claude Code searches (and maybe fetches) on its own, as in its own app (DESIGN.md § Decided, before milestone 10).
+  if (caps?.nativeWebSearch) {
+    return caps.nativeWebFetch
+      ? { label: `Tools on: Claude Code searches the web and fetches pages itself, as in its own app.${next}`, warn: false }
+      : { label: `Tools on: Claude Code searches the web itself; Lektor fetches pages, asking first for ones that didn't come from a search, your messages or your notes.${next}`, warn: false };
+  }
+  if (caps && caps.toolCalling !== 'native' && caps.toolCalling !== 'mcp') return { label: "Tools are on, but this model can't call tools.", warn: true };
   if (!searchConfigured) return { label: `Tools on: page fetching only. Set up a search provider in Lektor's settings for web search.${next}`, warn: true };
   return { label: `Tools on: web search and page fetching.${next}`, warn: false };
 }
@@ -407,12 +416,19 @@ function ToolRoundView({ round, card }: { round: ToolRound; card: Cards }) {
     if (c.result?.ok) parts.push(`Reported ${c.result.summary}`);
     else if (c.result) parts.push('Findings could not be placed');
   }
+  // What Claude Code ran itself: said plainly, so it's clear Lektor didn't vet it.
+  const ccSearches = round.calls.filter((c) => c.name === 'cc_web_search');
+  const ccFetches = round.calls.filter((c) => c.name === 'cc_web_fetch');
+  const ccOther = round.calls.filter((c) => c.name.startsWith('cc_') && c.name !== 'cc_web_search' && c.name !== 'cc_web_fetch');
+  if (ccSearches.length > 0) parts.push(`Claude Code searched: ${ccSearches.length} ${ccSearches.length === 1 ? 'query' : 'queries'}`);
+  if (ccFetches.length > 0) parts.push(`Claude Code fetched ${ccFetches.length} ${ccFetches.length === 1 ? 'page' : 'pages'}`);
+  if (ccOther.length > 0) parts.push(`Claude Code tried ${ccOther.length} other ${ccOther.length === 1 ? 'tool' : 'tools'}`);
   const requests = round.calls.filter((c) => c.name === 'request_context');
   for (const c of requests) {
     if (c.result?.ok) parts.push(`Asked for context: ${c.result.summary}`);
     else if (c.result) parts.push('A context request failed');
   }
-  const others = round.calls.length - searches.length - fetches.length - proposals.length - requests.length - reports.length;
+  const others = round.calls.length - searches.length - fetches.length - proposals.length - requests.length - reports.length - ccSearches.length - ccFetches.length - ccOther.length;
   if (others > 0) parts.push(`${others} other tool ${others === 1 ? 'call' : 'calls'}`);
   if (round.calls.some((c) => c.result?.limit)) parts.push('limit reached');
   if (round.calls.some((c) => !c.result)) parts.push('working…');

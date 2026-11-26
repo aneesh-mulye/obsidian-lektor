@@ -5,6 +5,8 @@ import { type App, Notice, type Plugin, PluginSettingTab, SecretComponent, Setti
 import { confirm } from './ConfirmModal';
 import { renderPresetSettings } from './PresetSettings';
 import { renderEndpointSettings } from './EndpointSettings';
+import { renderClaudeCodeSettings } from './ClaudeCodeSettings';
+import type { ClaudeCodeProvider } from '../core/cli/claude/provider';
 import type { PresetLibrary } from '../core/presets/library';
 import {
   type AttachmentMode,
@@ -38,6 +40,7 @@ export interface SettingsHost extends Plugin {
   presets: PresetLibrary;
   /** Contact an OpenAI- or Anthropic-compatible server and describe what it has. */
   checkEndpoint(endpoint: Endpoint): Promise<string>;
+  claudeCode: ClaudeCodeProvider | null;
 }
 
 const DISPLAY_LABELS: Record<DisplayMode, string> = {
@@ -127,6 +130,13 @@ export class LektorSettingTab extends PluginSettingTab {
         },
         check: (e) => this.host.checkEndpoint(e),
       },
+      () => this.display(),
+    );
+
+    renderClaudeCodeSettings(
+      this.app,
+      containerEl,
+      { settings: () => this.host.settingsStore.settings, apply: (patch) => this.apply(patch), provider: this.host.claudeCode },
       () => this.display(),
     );
 

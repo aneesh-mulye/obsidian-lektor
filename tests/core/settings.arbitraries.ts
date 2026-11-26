@@ -112,12 +112,19 @@ export const endpoint = fc.record({
   models: fc.array(fc.constantFrom('qwen3.8:27b', 'claude-opus-5-5', 'llama-3'), { maxLength: 3 }),
 });
 
-export const validSettings: fc.Arbitrary<Settings> = fc
+export const validV6Settings = fc
   .tuple(validV5Settings, fc.uniqueArray(endpoint, { selector: (e) => e.id, maxLength: 4 }))
   .map(([v5, endpoints]) => ({ ...v5, version: 6 as const, models: { ...v5.models, endpoints } }));
 
+export const validSettings: fc.Arbitrary<Settings> = fc
+  .tuple(validV6Settings, fc.boolean(), fc.constantFrom('', '/home/me/.local/bin/claude', '/opt/claude code/claude'), fc.constantFrom('claude' as const, 'lektor' as const))
+  .map(([v6, enabled, path, pages]) => ({ ...v6, version: 7 as const, cli: { claudeCode: { enabled, path, pages } } }));
+
 /** Non-exclusion leaves, each with a generator of values that must be rejected. */
 export const LEAVES: Record<string, fc.Arbitrary<unknown>> = {
+  'cli.claudeCode.enabled': fc.oneof(fc.constant('yes'), fc.constant(1), fc.constant(null)),
+  'cli.claudeCode.path': fc.oneof(fc.constant('relative/claude'), fc.constant('/bin/\nclaude'), fc.constant(3)),
+  'cli.claudeCode.pages': fc.oneof(fc.constant('everyone'), fc.constant(''), fc.constant(true)),
   'models.endpoints': fc.oneof(fc.constant('lm-studio'), fc.constant(null), fc.constant(3), fc.constant({ id: 'x' })),
   'presets.hidden': fc.oneof(fc.constant('proofread'), fc.constant([1]), fc.constant(['Bad Id']), fc.constant(['a', 'a']), fc.constant(null)),
   'review.defaultDisplayMode': fc.oneof(

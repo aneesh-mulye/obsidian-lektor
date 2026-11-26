@@ -11,10 +11,10 @@ import type { ModelAccepts } from '../context/attachments';
 import { type ContextManifest, type PreparedContext, recordSent, sha256 } from '../context/prepare';
 import type { ContextState } from '../context/state';
 import { MESSAGE_OVERHEAD, estimateTokens, fits, formatTokens } from '../context/tokens';
-import type { ChatMessage, ChatProvider, ChatRequest, ModelRef, ToolCall } from '../providers/types';
+import type { ChatMessage, ChatProvider, ChatRequest, ModelRef, ToolCall, ToolHost } from '../providers/types';
 import type { Proposal } from '../review/types';
 import type { DisplayMode } from '../settings';
-import type { ApprovalItem, ApprovalRequest, Shared, Transient } from '../tools/types';
+import type { ApprovalItem, ApprovalRequest, Shared, StepResult, Transient } from '../tools/types';
 import type { FindingSet } from '../findings/findings';
 import type { Preset } from '../presets/preset';
 import { type Delivery, presetInstructions } from '../presets/run';
@@ -229,9 +229,22 @@ export class ChatSession {
         if (!live()) return;
 
         // The last round offers no tools, so the loop always ends with an answer.
-        const offered = tools !== null && tools.definitions.length > 0 && round < MAX_TOOL_ROUNDS - 1 ? tools.definitions : undefined;
+        const mcp = caps.toolCalling === 'mcp';
+        const offered = !mcp && tools !== null && tools.definitions.length > 0 && round < MAX_TOOL_ROUNDS - 1 ? tools.definitions : undefined;
+        // MCP backends (Claude Code) call Lektor's tools themselves, through the same tool run (INVARIANTS.md L6).
+        const toolHost = mcp && tools !== null && tools.definitions.length > 0 ? this.#toolHost(tools, signal, live, transient) : undefined;
+        // Backends with their own web tools use them only if the globe and the preset allow (DESIGN.md § Decided, before milestone 10).
+        const webOn = this.#chat.toolsDisabled !== true;
+        const web = { search: webOn && (!preset || preset.tools.includes('web_search')), pages: webOn && (!preset || preset.tools.includes('fetch_page')) };
         const sink: { replay?: unknown } = {};
-        const calls = await this.#streamRound(provider, { model: model.model, messages: [...base, ...extra], ...(offered ? { tools: offered } : {}) }, signal, live, window, sink);
+        const calls = await this.#streamRound(
+          provider,
+          { model: model.model, messages: [...base, ...extra], ...(offered ? { tools: offered } : {}), ...(toolHost ? { toolHost } : {}), web },
+          signal,
+          live,
+          window,
+          sink,
+        );
         if (sink.replay !== undefined) replays.set(rounds.length, sink.replay);
         if (calls === null) {
           if (tools?.fenced && run === this.#run) await this.#extractFenced(tools.fenced);
@@ -248,26 +261,11 @@ export class ChatSession {
         }));
         this.#emit();
         for (let i = 0; i < calls.length; i++) {
-          const { proposal, findings, transient: sent, shared, ...stored } = await tools!.execute(calls[i]!, signal, (request) => this.#askApproval(request), {
-            choose: (request) => this.#askChoice(request),
-            context: () => this.#chat.context,
-          });
-          if (!live()) return;
-          if (proposal) this.#set({ ...this.#chat, proposals: { ...(this.#chat.proposals ?? {}), [proposal.id]: proposal } });
-          if (findings) this.#set({ ...this.#chat, findings: { ...(this.#chat.findings ?? {}), [findings.id]: findings } });
-          let result = stored;
-          if (sent) {
-            transient.set(calls[i]!.id, sent);
-            if (this.deps.storeFullTranscripts?.()) {
-              const contextHash = await sha256(sent.content);
-              this.#set({ ...this.#chat, sentContext: { ...(this.#chat.sentContext ?? {}), [contextHash]: sent.content } });
-              result = { ...stored, contextHash };
-            }
-          }
-          if (shared) this.#share(shared);
+          const out = await this.#runCall(tools!, calls[i]!, signal, live, transient);
+          if (!out) return;
           this.#updateReply((r) => ({
             ...r,
-            steps: r.steps!.map((st, k) => (k !== index ? st : { ...st, calls: st.calls.map((c, j) => (j === i ? { ...c, result } : c)) })),
+            steps: r.steps!.map((st, k) => (k !== index ? st : { ...st, calls: st.calls.map((c, j) => (j === i ? { ...c, result: out.result } : c)) })),
           }));
           this.#emit();
         }
@@ -276,6 +274,72 @@ export class ChatSession {
     } catch (err) {
       if (live()) this.#end('error', err instanceof Error && err.message ? err.message : 'The reply failed.');
     }
+  }
+
+  /**
+   * Run one tool call through the reply's tool run: approvals, proposals, findings, shared context
+   * (INVARIANTS.md T1–T3, A3, L6). Returns the result to keep, and what the model is sent instead
+   * of it for the rest of the reply, or null if the reply was stopped meanwhile.
+   */
+  async #runCall(tools: ToolRun, call: ToolCall, signal: AbortSignal, live: () => boolean, transient: Map<string, Transient>): Promise<{ result: StepResult; sent?: Transient } | null> {
+    const { proposal, findings, transient: sent, shared, ...stored } = await tools.execute(call, signal, (request) => this.#askApproval(request), {
+      choose: (request) => this.#askChoice(request),
+      context: () => this.#chat.context,
+    });
+    if (!live()) return null;
+    if (proposal) this.#set({ ...this.#chat, proposals: { ...(this.#chat.proposals ?? {}), [proposal.id]: proposal } });
+    if (findings) this.#set({ ...this.#chat, findings: { ...(this.#chat.findings ?? {}), [findings.id]: findings } });
+    let result: StepResult = stored;
+    if (sent) {
+      transient.set(call.id, sent);
+      if (this.deps.storeFullTranscripts?.()) {
+        const contextHash = await sha256(sent.content);
+        this.#set({ ...this.#chat, sentContext: { ...(this.#chat.sentContext ?? {}), [contextHash]: sent.content } });
+        result = { ...stored, contextHash };
+      }
+    }
+    if (shared) this.#share(shared);
+    return { result, ...(sent ? { sent } : {}) };
+  }
+
+  /** Lektor's tools as an MCP backend calls them: each call becomes a step of the live reply, in order. */
+  #toolHost(tools: ToolRun, signal: AbortSignal, live: () => boolean, transient: Map<string, Transient>): ToolHost {
+    let n = 0;
+    return {
+      definitions: tools.definitions,
+      call: async (name, args) => {
+        if (!live()) return { content: 'Stopped by the user.', isError: true };
+        const call: ToolCall = { id: `mcp-${++n}-${this.deps.newId()}`, name, arguments: args };
+        this.#openCall(call);
+        const out = await this.#runCall(tools, call, signal, live, transient);
+        if (!out) return { content: 'Stopped by the user.', isError: true };
+        this.#closeCall(call.id, out.result);
+        this.#persist();
+        const images = out.sent?.images ?? [];
+        return {
+          content: out.sent?.content ?? out.result.content,
+          isError: !out.result.ok,
+          ...(images.length > 0 ? { images: images.map(({ mime, data, tokens }) => ({ mime, data, tokens })) } : {}),
+        };
+      },
+    };
+  }
+
+  /** A call made during the stream (over MCP, or by the backend itself): it ends the text so far, like a tool round. */
+  #openCall(call: ToolCall): void {
+    this.#updateReply((r) => {
+      const steps = r.steps ?? [];
+      const last = steps.at(-1);
+      const step = { id: call.id, name: call.name, arguments: call.arguments };
+      if (r.content === '' && last) return { ...r, steps: [...steps.slice(0, -1), { ...last, calls: [...last.calls, step] }] };
+      return { ...r, content: '', steps: [...steps, { text: r.content, calls: [step] }] };
+    });
+    this.#emit();
+  }
+
+  #closeCall(id: string, result: StepResult): void {
+    this.#updateReply((r) => ({ ...r, steps: (r.steps ?? []).map((st) => ({ ...st, calls: st.calls.map((c) => (c.id === id ? { ...c, result } : c)) })) }));
+    this.#emit();
   }
 
   /**
@@ -322,6 +386,11 @@ export class ChatSession {
             break;
           case 'notice':
             this.#updateReply((r) => ({ ...r, notice: r.notice ? `${r.notice} ${event.message}` : event.message }));
+            break;
+          case 'tool_activity':
+            // The backend ran a tool itself (Claude Code's own WebSearch): shown in the reply's steps, never re-run here.
+            this.#openCall(event.call);
+            this.#closeCall(event.call.id, { ok: event.result.ok, content: event.result.content, summary: event.result.summary, ...(event.result.urls ? { urls: event.result.urls } : {}) });
             break;
           case 'done':
             if ((event.reason === 'stop' || event.reason === 'length') && calls.length > 0) return calls;

@@ -11,6 +11,10 @@ import { AnthropicCompatProvider } from './core/providers/anthropic';
 import type { EndpointAccess } from './core/providers/compat';
 import { OpenAICompatProvider } from './core/providers/openai';
 import { ProviderError } from './core/providers/stream';
+import { ClaudeCodeProvider } from './core/cli/claude/provider';
+import type { SelfTestRecord } from './core/cli/claude/selftest';
+import { executableCandidates, findExecutable } from './core/cli/fs';
+import { nodeSpawner } from './core/cli/spawn';
 import type { ReadonlyEndpoint } from './core/settings';
 import { SettingsStore } from './core/settings';
 import { confirm } from './obsidian/ConfirmModal';
@@ -40,6 +44,8 @@ import type { ContextUi } from './obsidian/ui/ContextBar';
 
 export default class LektorPlugin extends Plugin {
   editLog!: EditLog;
+  /** The Claude Code bridge, while it is turned on (DESIGN.md § Backends). */
+  claudeCode: ClaudeCodeProvider | null = null;
   /** For the settings tab's "Test connection" on an endpoint. */
   checkEndpoint: (e: ReadonlyEndpoint) => Promise<string> = () => Promise.resolve('Lektor is still loading.');
   /** Presets (DESIGN.md § Presets): the built-ins and the files in `presets/`. */
@@ -88,8 +94,34 @@ export default class LektorPlugin extends Plugin {
         return err instanceof Error && err.message ? err.message : `Could not reach ${e.name}.`;
       }
     };
+    // The Claude Code bridge (DESIGN.md § Decided, before milestone 10): off until the user opts in. Self-test results live in Lektor's own data.
+    const selfTestKey = 'cli-selftest';
+    const claudeCode = new ClaudeCodeProvider({
+      command: async () => {
+        const configured = settings().cli.claudeCode.path;
+        return configured !== '' ? findExecutable([configured]) : findExecutable(executableCandidates('claude', process.env['PATH']));
+      },
+      spawner: nodeSpawner,
+      fetchMode: () => settings().cli.claudeCode.pages,
+      selfTest: {
+        read: async () => {
+          const text = await storage.read('meta', selfTestKey).catch(() => null);
+          try {
+            const r = text === null ? null : (JSON.parse(text) as { claude?: SelfTestRecord }).claude;
+            return r && typeof r.version === 'string' && typeof r.at === 'number' && typeof r.ok === 'boolean' ? r : null;
+          } catch {
+            return null;
+          }
+        },
+        write: (r) => storage.write('meta', selfTestKey, JSON.stringify({ claude: r })),
+      },
+      now: () => Date.now(),
+      randomToken: () => crypto.randomUUID().replace(/-/g, ''),
+    });
+    this.claudeCode = claudeCode;
     const providers = (): ChatProvider[] => {
       const out: ChatProvider[] = [this.ollama];
+      if (settings().cli.claudeCode.enabled) out.push(claudeCode);
       for (const e of settings().models.endpoints) {
         const sig = JSON.stringify(e);
         let entry = compat.get(e.id);

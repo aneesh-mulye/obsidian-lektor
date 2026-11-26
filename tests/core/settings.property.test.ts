@@ -30,6 +30,7 @@ import {
   validV3Settings,
   validV4Settings,
   validV5Settings,
+  validV6Settings,
   endpoint,
   toolSettings,
 } from './settings.arbitraries';
@@ -147,7 +148,8 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v1;
         expect(store.settings).toEqual({
           ...rest,
-          version: 6,
+          version: 7,
+          cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } },
           models: DEFAULT_SETTINGS.models,
           context: { ...rest.context, respectObsidianExclusions: true },
           tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
@@ -166,7 +168,8 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v2;
         expect(store.settings).toEqual({
           ...rest,
-          version: 6,
+          version: 7,
+          cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } },
           models: { ...rest.models, ollama: { ...rest.models.ollama, contextLength: 32768 }, endpoints: [] },
           context: { ...rest.context, respectObsidianExclusions: true },
           tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
@@ -182,7 +185,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV3Settings, (v3) => {
         const store = SettingsStore.load(disk(v3));
         const { version: _v, ...rest } = v3;
-        expect(store.settings).toEqual({ ...rest, version: 6, models: { ...rest.models, endpoints: [] }, tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools }, presets: { hidden: [] } });
+        expect(store.settings).toEqual({ ...rest, version: 7, models: { ...rest.models, endpoints: [] }, tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools }, presets: { hidden: [] }, cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } } });
         expect(store.settings.tools.searchProvider).toBe('none');
         expect(store.settings.tools.secrets).toEqual({ tavily: '', exa: '', brave: '' });
         expect(store.problems).toEqual([]);
@@ -195,7 +198,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV4Settings, (v4) => {
         const store = SettingsStore.load(disk(v4));
         const { version: _v, ...rest } = v4;
-        expect(store.settings).toEqual({ ...rest, version: 6, models: { ...rest.models, endpoints: [] }, presets: { hidden: [] } });
+        expect(store.settings).toEqual({ ...rest, version: 7, models: { ...rest.models, endpoints: [] }, presets: { hidden: [] }, cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } } });
         expect(store.problems).toEqual([]);
       }),
     );
@@ -206,7 +209,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV5Settings, (v5) => {
         const store = SettingsStore.load(disk(v5));
         const { version: _v, ...rest } = v5;
-        expect(store.settings).toEqual({ ...rest, version: 6, models: { ...rest.models, endpoints: [] } });
+        expect(store.settings).toEqual({ ...rest, version: 7, models: { ...rest.models, endpoints: [] }, cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } } });
         expect(store.problems).toEqual([]);
       }),
     );
@@ -246,6 +249,18 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const store = SettingsStore.load(disk(raw));
         expect(store.settings.models.endpoints).toEqual([e]);
         expect(store.problems.map((p) => p.path)).toEqual(['models.endpoints.1']);
+      }),
+    );
+  });
+
+  it('S11: version-6 settings migrate to version 7 losslessly, with Claude Code off', () => {
+    fc.assert(
+      fc.property(validV6Settings, (v6) => {
+        const store = SettingsStore.load(disk(v6));
+        const { version: _v, ...rest } = v6;
+        expect(store.settings).toEqual({ ...rest, version: 7, cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } } });
+        expect(store.settings.cli.claudeCode.enabled).toBe(false);
+        expect(store.problems).toEqual([]);
       }),
     );
   });

@@ -58,7 +58,8 @@ export function toolRuns(registry: ToolRegistry, options: ToolRunOptions): Tools
       for (const u of contextUrls) known.add(u);
       const none = () => Promise.resolve({ ok: false, content: 'Tools are not available.', summary: 'no tools' });
 
-      if (capabilities.toolCalling !== 'native') {
+      // MCP backends (Claude Code) call the same tools natively, over the loopback server.
+      if (capabilities.toolCalling !== 'native' && capabilities.toolCalling !== 'mcp') {
         // No tool calling: findings and edits can still come in fenced blocks.
         if (output === 'findings') {
           if (!options.fencedFindings || editableSet.size === 0) return null;
@@ -69,7 +70,13 @@ export function toolRuns(registry: ToolRegistry, options: ToolRunOptions): Tools
         return { definitions: [], execute: none, fenced: options.fenced(editableSet, model) };
       }
       // A preset uses only the web tools it lists, and only those available anyway.
-      const web = chat.toolsDisabled ? [] : options.webNames().filter((n) => !preset || (preset.tools as readonly string[]).includes(n));
+      // A backend that searches or fetches itself gets no Lektor web_search or fetch_page (DESIGN.md § Decided, before milestone 10).
+      const web = chat.toolsDisabled
+        ? []
+        : options
+            .webNames()
+            .filter((n) => !preset || (preset.tools as readonly string[]).includes(n))
+            .filter((n) => !(n === 'web_search' && capabilities.nativeWebSearch) && !(n === 'fetch_page' && capabilities.nativeWebFetch === true));
       const names = [
         ...web,
         ...(options.attachmentMode ? ['request_context'] : []),

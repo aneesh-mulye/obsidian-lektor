@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 
-export const SETTINGS_VERSION = 6;
+export const SETTINGS_VERSION = 7;
 
 /** The effective exclusion list while the stored one is unreadable. */
 export const EXCLUDE_EVERYTHING: readonly string[] = Object.freeze(['**']);
@@ -169,6 +169,17 @@ const SECTIONS = {
   privacy: z.strictObject({
     storeFullTranscripts: z.boolean(),
   }),
+  cli: z.strictObject({
+    claudeCode: z.strictObject({
+      /** Off until the user opts in (DESIGN.md § Subscriptions and terms). */
+      enabled: z.boolean(),
+      /** The `claude` executable ('' = look on PATH and the usual places). */
+      // eslint-disable-next-line no-control-regex -- control characters are exactly what we reject
+      path: z.union([z.literal(''), z.string().max(1024).regex(/^\/[^\u0000-\u001f]*$/)]),
+      /** Who fetches web pages: Claude Code itself, or Lektor (with its approval for unknown URLs). */
+      pages: z.enum(['claude', 'lektor']),
+    }),
+  }),
   presets: z.strictObject({
     /** Built-in presets the user hid (DESIGN.md § Presets). */
     hidden: z
@@ -216,6 +227,7 @@ export const DEFAULT_SETTINGS: Settings = deepFreeze({
     secrets: { tavily: '', exa: '', brave: '' },
   },
   privacy: { storeFullTranscripts: false },
+  cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } },
   presets: { hidden: [] },
 });
 
@@ -256,6 +268,8 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
   },
   // 4 → 5: presets (which built-ins are hidden: none).
   4: (raw) => ({ ...raw, version: 5, ...(Object.hasOwn(raw, 'presets') ? {} : { presets: { hidden: [] } }) }),
+  // 6 → 7: the Claude Code bridge (off).
+  6: (raw) => ({ ...raw, version: 7, ...(Object.hasOwn(raw, 'cli') ? {} : { cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } } }) }),
   // 5 → 6: OpenAI- and Anthropic-compatible endpoints (none).
   5: (raw) => ({ ...raw, version: 6, ...(Object.hasOwn(raw, 'models') ? { models: addMissing(raw['models'], 'endpoints', []) } : {}) }),
 };
@@ -289,6 +303,7 @@ export interface SettingsPatch {
   readonly tools?: Partial<Settings['tools']>;
   readonly privacy?: Partial<Settings['privacy']>;
   readonly presets?: Partial<Settings['presets']>;
+  readonly cli?: Partial<Settings['cli']>;
 }
 
 export class SettingsStore {

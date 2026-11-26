@@ -826,6 +826,125 @@ On 2026-11-27, in a separate instance, with `qwen3.8:27b` served through Ollama 
 
 The user's own Obsidian profile was unchanged before and after.
 
+## Milestone 10: Claude Code bridge
+
+Decisions (2026-11-27, before milestone 10; DESIGN.md § Decided):
+
+- Claude Code searches and fetches with its own tools by default, and the chat says so. A setting switches fetching to Lektor's `fetch_page`, over MCP.
+- Each run uses a fresh temp folder outside the vault.
+- The spawner and MCP endpoint are Lektor's own code.
+- Each reply runs one `claude -p` process.
+- `--safe-mode` is replaced by `--setting-sources ""` and `--restricted`, because it also drops Lektor's MCP server.
+
+Shared generator, the **bridge world**: random bridge options (model aliases, including hostile strings; globe on or off; preset web tools; fetch mode; the offered Lektor tools; paths with spaces and quotes), random Claude Code stream-json event streams (text and thinking deltas, its own WebSearch and WebFetch with results, MCP tool uses, denied tools, errors, `result` events of every subtype, a process that exits early, garbage lines), and random MCP requests.
+
+### L1. Lockdown flags are unconditional (design invariant 10) — active
+
+`tests/core/cli.property.test.ts`
+
+- **Generator:** the bridge world's options.
+- **Properties:**
+  - **Present:** every argument list contains every lockdown flag: `-p`, stream-json in and out, `--verbose`, `--include-partial-messages`, `--no-session-persistence`, `--setting-sources ""`, `--restricted`, `--strict-mcp-config`, `--mcp-config <file>`, `--permission-mode dontAsk`, `--permission-prompts none`, `--disable-slash-commands`, `--tools …`, `--system-prompt-file <file>`, `--model <alias>`.
+  - **Absent:** no forbidden flag or value ever appears: `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `bypassPermissions`, `--add-dir`, `--settings`, `--plugin-dir`, `--plugin-url`, `--agents`, `--resume`, `--continue`, `--chrome`, `--safe-mode`, and the tools `Bash`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `NotebookEdit`, `Agent`, `Task`.
+  - **Tools:** `--tools` names only `WebSearch` and `WebFetch`. `--allowedTools` names only those and `mcp__lektor__<tool>` for the Lektor tools offered.
+  - **Web:** with the globe off there are no web tools. With Lektor fetching, there is no `WebFetch`.
+  - **The model:** it must be an alias or a plain model name, or the run is refused.
+  - **Nothing private in argv:** the arguments carry no conversation text, context, token or key. Those go in files and stdin.
+  - A snapshot test pins the exact list.
+- **Counterexample means:** a refactor dropped a lockdown flag, or Claude Code could get a file or shell tool (hard rule 2).
+
+### L2. The lockdown self-test fails closed — active
+
+`tests/core/cli.property.test.ts`
+
+- **Generator:** random self-test event streams: a clean run, extra tools in the init event, another permission mode, other MCP servers, a tool use outside the allowed set, either canary token anywhere in the output (reply text, a tool result, a thinking delta), a process error or early exit.
+- **Properties:**
+  - The test passes only if all of these hold: the init event lists exactly the expected tools; the permission mode is `dontAsk`; the only MCP server is Lektor's; no tool outside the allowed set was used; neither canary appears anywhere in the output; and the run finished.
+  - A pass is cached for 24 hours for that CLI version only, and a failure is never cached as a pass.
+  - Until a test passes, no chat request is sent to Claude Code, and there is no override.
+- **Counterexample means:** the bridge runs with a lockdown that wasn't proven (hard rule 2).
+
+### L3. The run folder is the only place the bridge touches — active
+
+`tests/core/cli.property.test.ts` (real temporary folders) and `tests/lint/cli-sources.test.ts`
+
+- **Properties:**
+  - **Where:** every file the bridge writes or removes is inside a folder it created with `mkdtemp` under the system temp directory, with the `lektor-` prefix. Only the names `void/`, `mcp.json`, `system.txt` and `canary.txt` are written. Paths with `..`, absolute paths and other names are refused.
+  - **Afterwards:** the run folder is removed after every run, whether it finished, failed or was stopped.
+  - **The void:** `void/` is empty when Claude Code starts.
+  - **One module each:** the bridge never reads a file's contents. `fs`, `os` and `path` are imported only by `src/core/cli/fs.ts`, `child_process` only by `src/core/cli/spawn.ts` (never with a shell), and `http` only by `src/core/cli/mcp.ts`.
+- **Counterexample means:** the bridge could read or change something outside its own temp folder, notes included.
+
+### L4. The loopback MCP server answers only its run, and only with the offered tools — active
+
+`tests/core/cli.property.test.ts`
+
+- **Generator:** random HTTP requests (methods, paths, headers, a missing or wrong token, wrong Host or Origin) and random JSON-RPC messages (valid and malformed, unknown methods, batches, tool calls by name and with arguments).
+- **Properties:**
+  - **Who:** it listens on 127.0.0.1 only. It answers a request only if it carries the run's token, Host `127.0.0.1:<port>` and no Origin. Everything else gets an HTTP error and runs nothing.
+  - **What:** `tools/list` lists exactly the tools offered for this reply. A call to any other tool is an error and runs nothing. Calls run one at a time, through the same registry, approvals and caps as every other backend.
+  - **Bad input:** malformed input gets a JSON-RPC error, and the server never throws.
+  - **Afterwards:** it is closed when the run ends.
+- **Counterexample means:** another program on the machine could use Lektor's tools (show approval cards, propose edits), or Claude Code could run a tool the chat didn't offer.
+
+### L5. Claude Code streams end exactly once — active
+
+`tests/core/cli.property.test.ts`
+
+- **Generator:** the bridge world's event streams, cut into random chunks, with stderr noise, exit codes, and Stop at a random point.
+- **Properties:**
+  - The O1 contract holds: events, then exactly one `done`, last.
+  - Text and thinking are exactly the deltas Claude Code streamed.
+  - Its own WebSearch and WebFetch uses are reported as tool activity, with the query or URL and the result's links, named as Claude Code's.
+  - An error `result`, a non-zero exit or a missing `result` is an error.
+  - Stop kills the process and yields `done: aborted`, after which nothing else happens.
+- **Counterexample means:** a reply hangs, passes off a failure as an answer, or hides that Claude Code searched or fetched on its own.
+
+### L6. A Claude Code reply goes through Lektor's review and approvals (session) — active
+
+`tests/core/cli.session.test.ts`, a real session with a fake Claude Code process
+
+- **Properties:**
+  - Lektor tools Claude Code calls over MCP run through the same tool run as native tool calls. Their proposals and findings land in the chat, `request_context` and fetch approvals show their cards, and each call appears in the reply's steps, in order, between the text before and after it.
+  - **The globe and presets:** the globe and a preset's web tools decide whether Claude Code gets its web tools.
+  - **Fetch mode:** in Lektor-fetch mode `fetch_page` is offered over MCP and `WebFetch` is not.
+  - **Stop:** it declines a waiting approval and ends the process.
+  - **What the model sees:** exactly the visible transcript and the chips, as with every other backend (C1, X2).
+- **Counterexample means:** Claude Code changes notes, reads context or fetches past Lektor's gates.
+
+### Mutation testing and regressions (milestone 10)
+
+- **25 mutants, all killed.** They covered:
+  - the argument list: a dropped `--restricted` or `--setting-sources`, `Read` slipped into the tools, an unchecked model or Lektor tool;
+  - the self-test's verdict and its cache;
+  - a chat sent before the self-test passed;
+  - run-file names;
+  - a run folder left behind;
+  - the MCP server's Origin, Host and token checks, an unknown tool run anyway, and calls run in parallel;
+  - an error `result` treated as success;
+  - web tools offered twice, the globe and the fetch mode ignored, and Claude Code's own activity dropped.
+- **One mutant (no kill on Stop) survived at first.** A `finally` also kills the process, but only after Claude Code prints something more. If it hangs silently, Stop would leave it running and still able to call Lektor's tools. A test now stops a silent process, and the mutant is killed.
+- **The live check found one bug, now fixed:** the globe's tooltip kept the old fetch mode, because capabilities were read again only when the model changed. They are now read again for each new chat and after each message.
+
+### Checked in a real Obsidian (milestone 10)
+
+On 2026-11-27, in a separate instance, with Claude Code 2.1.332 as installed and signed in. The bridge was turned on in the test vault's settings; the stored version-4 settings migrated to version 7.
+
+- **Picker:** "Claude Code · Opus (latest)", "· Sonnet (latest)", "· Haiku (latest)" and "· Fable (latest)".
+- **The globe:** "Tools on: Claude Code searches the web and fetches pages itself, as in its own app." In Lektor-fetch mode (after the fix above) it read "Claude Code searches the web itself; Lektor fetches pages, asking first for ones that didn't come from a search, your messages or your notes."
+- **Proofread with haiku:**
+  - The first reply ran the self-test first. The reply said "Lektor checked Claude Code 2.1.332's lockdown before using it", and `meta/cli-selftest.json` recorded a pass.
+  - Claude Code called `report_findings` over MCP: "Reported Drafts/Essay.md: 4 findings". The card and four highlights appeared. The whole reply took 13 s.
+- **Its own search:** the reply showed "Claude Code searched: 1 query", then answered "about 48 metres (156 feet) … according to Wikipedia's Skerryvore article", with the link.
+- **Lektor fetching pages:** the model built `https://en.wikipedia.org/wiki/Bell_Rock_Lighthouse` itself. The approval card "Fetch a page the model chose?" appeared, Deny worked, and the model said the fetch was declined.
+- **`request_context` through Claude Code:** the card listed `Reference/Chain A.md`. After Share all, the model quoted its first line.
+- **Opus:** it answered "OK".
+- **Cleanup:** no run folder was left in `/tmp`, and no Claude Code process was still running.
+
+Probing the flags first (DESIGN.md § Decided, before milestone 10) took about ten short haiku requests on the user's subscription, with the user's permission.
+
+The user's own Obsidian profile was unchanged before and after.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.
@@ -839,7 +958,7 @@ These come from `docs/DESIGN.md` § Testing. Each gets a full generator, propert
 7. **History completeness:** active as W5.
 8. **Proposal validation:** active as W2.
 9. **Caps hold:** active as T2.
-10. **Lockdown flags are unconditional:** planned (M10, M11).
+10. **Lockdown flags are unconditional:** active as L1 (Claude Code; Codex in M11).
 11. **Preset parsing is total:** active as PR1.
 
 Also from the design: **link-depth preview matches what is sent**, active as X4.

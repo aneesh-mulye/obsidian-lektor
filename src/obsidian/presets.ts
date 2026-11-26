@@ -35,12 +35,12 @@ export function presetStarter(deps: {
     const chat = deps.chats.session.chat;
     const model = preset.model ?? chat.model;
     if (chat.toolsDisabled) return `${NO_SEARCH} (Tools are off for this chat.)`;
-    if (!deps.searchConfigured()) return `${NO_SEARCH} (No search provider is set up in Lektor's settings.)`;
     const provider = model ? deps.providers().find((p) => p.id === model.provider) : undefined;
-    if (provider && model) {
-      const caps = await provider.capabilities(model.model).catch(() => null);
-      if (caps && caps.toolCalling !== 'native') return `${NO_SEARCH} (This model can't call tools.)`;
-    }
+    const caps = provider && model ? await provider.capabilities(model.model).catch(() => null) : null;
+    // A backend that searches itself (Claude Code) needs no search provider.
+    if (caps?.nativeWebSearch) return null;
+    if (!deps.searchConfigured()) return `${NO_SEARCH} (No search provider is set up in Lektor's settings.)`;
+    if (caps && caps.toolCalling !== 'native' && caps.toolCalling !== 'mcp') return `${NO_SEARCH} (This model can't call tools.)`;
     return null;
   };
   return {

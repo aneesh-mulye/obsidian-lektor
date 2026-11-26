@@ -247,7 +247,7 @@ describe('display modes (INVARIANTS.md B5)', () => {
   for (const n of ['web_search', 'fetch_page', 'propose_edit', 'propose_note', 'request_context']) registry.register(stub(n));
   const fenced = { instructions: 'FENCED', extract: () => Promise.resolve({ proposals: [], problems: [] }) };
 
-  it('B5: a Prose chat is never offered edit tools or fenced instructions, and is told to describe changes (and request_context is offered to every native model)', () => {
+  it('B5: a Prose chat is never offered edit tools or fenced instructions, and is told to describe changes (and request_context is offered to every model that calls tools, natively or over MCP)', () => {
     fc.assert(
       fc.property(
         fc.option(fc.constantFrom(...DISPLAY_MODES), { nil: undefined }),
@@ -257,7 +257,9 @@ describe('display modes (INVARIANTS.md B5)', () => {
         fc.boolean(),
         fc.subarray(['web_search', 'fetch_page']),
         fc.boolean(),
-        (mode, fallback, toolCalling, editable, toolsDisabled, web, requests) => {
+        fc.boolean(),
+        fc.boolean(),
+        (mode, fallback, toolCalling, editable, toolsDisabled, web, requests, nativeSearch, nativeFetch) => {
           const runs = toolRuns(registry, {
             webNames: () => web,
             reviewNames: () => ['propose_edit', 'propose_note'],
@@ -271,11 +273,16 @@ describe('display modes (INVARIANTS.md B5)', () => {
             ...(mode ? { displayMode: mode } : {}),
             ...(toolsDisabled ? { toolsDisabled } : {}),
           };
-          const run = runs.forReply({ chat, capabilities: { toolCalling, nativeWebSearch: false, images: false, contextWindow: 8192 }, contextUrls: [], editable });
+          const run = runs.forReply({ chat, capabilities: { toolCalling, nativeWebSearch: nativeSearch, nativeWebFetch: nativeFetch, images: false, contextWindow: 8192 }, contextUrls: [], editable });
           const names = (run?.definitions ?? []).map((d) => d.name);
-          // request_context: every model with native tool calling, in every mode, whatever the globe says; no other model.
-          expect(names.includes('request_context')).toBe(requests && toolCalling === 'native');
+          const calls = toolCalling === 'native' || toolCalling === 'mcp';
+          // request_context: every model that calls tools (natively or over MCP), in every mode, whatever the globe says; no other model.
+          expect(names.includes('request_context')).toBe(requests && calls);
           if (toolsDisabled) for (const w of web) expect(names).not.toContain(w);
+          // A backend that searches or fetches itself never gets Lektor's web_search or fetch_page (milestone 10).
+          if (nativeSearch) expect(names).not.toContain('web_search');
+          if (nativeFetch) expect(names).not.toContain('fetch_page');
+          if (calls && !toolsDisabled) for (const w of web) if (!(w === 'web_search' && nativeSearch) && !(w === 'fetch_page' && nativeFetch)) expect(names).toContain(w);
           if ((mode ?? fallback) === 'prose') {
             expect(names).not.toContain('propose_edit');
             expect(names).not.toContain('propose_note');
@@ -283,7 +290,7 @@ describe('display modes (INVARIANTS.md B5)', () => {
             expect(run?.instructions).toBe(PROSE);
           } else {
             expect(run?.instructions).toBeUndefined();
-            if (toolCalling === 'native') {
+            if (calls) {
               expect(names.includes('propose_edit')).toBe(editable.length > 0);
               expect(names).toContain('propose_note');
             } else {
