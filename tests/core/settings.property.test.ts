@@ -29,6 +29,8 @@ import {
   validV2Settings,
   validV3Settings,
   validV4Settings,
+  validV5Settings,
+  endpoint,
   toolSettings,
 } from './settings.arbitraries';
 
@@ -145,7 +147,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v1;
         expect(store.settings).toEqual({
           ...rest,
-          version: 5,
+          version: 6,
           models: DEFAULT_SETTINGS.models,
           context: { ...rest.context, respectObsidianExclusions: true },
           tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
@@ -164,8 +166,8 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v2;
         expect(store.settings).toEqual({
           ...rest,
-          version: 5,
-          models: { ...rest.models, ollama: { ...rest.models.ollama, contextLength: 32768 } },
+          version: 6,
+          models: { ...rest.models, ollama: { ...rest.models.ollama, contextLength: 32768 }, endpoints: [] },
           context: { ...rest.context, respectObsidianExclusions: true },
           tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
           presets: { hidden: [] },
@@ -180,7 +182,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV3Settings, (v3) => {
         const store = SettingsStore.load(disk(v3));
         const { version: _v, ...rest } = v3;
-        expect(store.settings).toEqual({ ...rest, version: 5, tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools }, presets: { hidden: [] } });
+        expect(store.settings).toEqual({ ...rest, version: 6, models: { ...rest.models, endpoints: [] }, tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools }, presets: { hidden: [] } });
         expect(store.settings.tools.searchProvider).toBe('none');
         expect(store.settings.tools.secrets).toEqual({ tavily: '', exa: '', brave: '' });
         expect(store.problems).toEqual([]);
@@ -193,8 +195,57 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV4Settings, (v4) => {
         const store = SettingsStore.load(disk(v4));
         const { version: _v, ...rest } = v4;
-        expect(store.settings).toEqual({ ...rest, version: 5, presets: { hidden: [] } });
+        expect(store.settings).toEqual({ ...rest, version: 6, models: { ...rest.models, endpoints: [] }, presets: { hidden: [] } });
         expect(store.problems).toEqual([]);
+      }),
+    );
+  });
+
+  it('S10: version-5 settings migrate to version 6 losslessly, with no endpoints', () => {
+    fc.assert(
+      fc.property(validV5Settings, (v5) => {
+        const store = SettingsStore.load(disk(v5));
+        const { version: _v, ...rest } = v5;
+        expect(store.settings).toEqual({ ...rest, version: 6, models: { ...rest.models, endpoints: [] } });
+        expect(store.problems).toEqual([]);
+      }),
+    );
+  });
+
+  it('S10: an unreadable endpoint is dropped on its own; the other endpoints and settings are kept', () => {
+    const bad = fc.oneof(
+      fc.constant(null),
+      fc.constant('x'),
+      endpoint.map((e) => ({ ...e, baseUrl: 'ftp://x' })),
+      endpoint.map((e) => ({ ...e, id: 'Bad Id' })),
+      endpoint.map((e) => ({ ...e, apiKey: 'sk-secret' })),
+      endpoint.map((e) => ({ ...e, contextLength: 10 })),
+    );
+    fc.assert(
+      fc.property(validSettings, fc.array(fc.tuple(fc.nat(), bad), { minLength: 1, maxLength: 3 }), (s, inserts) => {
+        const list: unknown[] = [...s.models.endpoints];
+        for (const [at, b] of inserts) list.splice(at % (list.length + 1), 0, b);
+        const raw = clone(s) as unknown as { models: { endpoints: unknown[] } };
+        raw.models.endpoints = list;
+        const store = SettingsStore.load(disk(raw));
+        expect(store.settings).toEqual(s);
+        expect(store.problems.map((p) => p.path).sort()).toEqual(
+          list.flatMap((e, i) => (s.models.endpoints.includes(e as never) ? [] : [`models.endpoints.${i}`])).sort(),
+        );
+        // A key smuggled into an endpoint never survives (INVARIANTS.md E3).
+        expect(JSON.stringify(store.toData())).not.toContain('sk-secret');
+      }),
+    );
+  });
+
+  it('S10: two endpoints with the same id: the second is dropped', () => {
+    fc.assert(
+      fc.property(validSettings, endpoint, (s, e) => {
+        const raw = clone(s) as unknown as { models: { endpoints: unknown[] } };
+        raw.models.endpoints = [e, { ...e, name: 'Copy' }];
+        const store = SettingsStore.load(disk(raw));
+        expect(store.settings.models.endpoints).toEqual([e]);
+        expect(store.problems.map((p) => p.path)).toEqual(['models.endpoints.1']);
       }),
     );
   });

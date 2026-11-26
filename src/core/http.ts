@@ -40,3 +40,39 @@ export async function readText(body: AsyncIterable<Uint8Array>, limit = 4 * 1024
   }
   return out + decoder.decode();
 }
+
+/**
+ * Streaming through `primary` (fetch), except for servers that refuse it before answering (CORS):
+ * those get the request once through `fallback` (Obsidian's requestUrl, which doesn't stream), and
+ * every later request goes there directly (INVARIANTS.md E4). Nothing is ever sent twice once a
+ * response has started, and an abort is never retried.
+ */
+export class FallbackHttpClient implements HttpClient {
+  #fallen = false;
+
+  constructor(
+    private readonly primary: HttpClient,
+    private readonly fallback: HttpClient,
+    /** Called once, the first time the fallback is used. */
+    private readonly onFallback: () => void,
+  ) {}
+
+  /** Whether requests go to the fallback client now. */
+  get fallen(): boolean {
+    return this.#fallen;
+  }
+
+  async request(req: HttpRequest): Promise<HttpResponse> {
+    if (this.#fallen) return this.fallback.request(req);
+    try {
+      return await this.primary.request(req);
+    } catch (err) {
+      // An abort, or a failure we were told about after the user stopped, is final.
+      if (req.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) throw err;
+      const res = await this.fallback.request(req);
+      this.#fallen = true;
+      this.onFallback();
+      return res;
+    }
+  }
+}

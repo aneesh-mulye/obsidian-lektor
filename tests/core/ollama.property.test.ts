@@ -159,6 +159,7 @@ function shape(e: ChatEvent): Shape {
     expect(e.message.length).toBeGreaterThan(0);
     return { type: 'error' };
   }
+  if (e.type === 'replay' || e.type === 'notice') throw new Error(`Ollama never sends ${e.type} events.`);
   return e;
 }
 

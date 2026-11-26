@@ -26,7 +26,7 @@ export interface PresetStarter {
 export function presetStarter(deps: {
   app: App;
   chats: ChatManager;
-  providers: readonly ChatProvider[];
+  providers: () => readonly ChatProvider[];
   searchConfigured: () => boolean;
   notice: (message: string) => void;
 }): PresetStarter {
@@ -36,7 +36,7 @@ export function presetStarter(deps: {
     const model = preset.model ?? chat.model;
     if (chat.toolsDisabled) return `${NO_SEARCH} (Tools are off for this chat.)`;
     if (!deps.searchConfigured()) return `${NO_SEARCH} (No search provider is set up in Lektor's settings.)`;
-    const provider = model ? deps.providers.find((p) => p.id === model.provider) : undefined;
+    const provider = model ? deps.providers().find((p) => p.id === model.provider) : undefined;
     if (provider && model) {
       const caps = await provider.capabilities(model.model).catch(() => null);
       if (caps && caps.toolCalling !== 'native') return `${NO_SEARCH} (This model can't call tools.)`;

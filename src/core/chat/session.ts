@@ -197,6 +197,8 @@ export class ChatSession {
       }
       // Shared through request_context during this reply: sent in full until the reply ends, never saved (INVARIANTS.md A4).
       const transient = new Map<string, Transient>();
+      // Provider replay data (Claude's signed thinking) per tool round of this reply; never saved (INVARIANTS.md E2).
+      const replays = new Map<number, unknown>();
       const baseEstimate = (prepared?.tokens ?? 0) + messagesTokens(transcript, estimateTokens, MESSAGE_OVERHEAD);
       // One tool run (one budget) per user message (INVARIANTS.md T2).
       const editable = prepared ? [...new Set([...prepared.manifest.notes.map((n) => n.path), ...prepared.manifest.selections.map((x) => x.path)])] : [];
@@ -215,7 +217,7 @@ export class ChatSession {
 
       for (let round = 0; ; round++) {
         const rounds = this.#reply()?.steps ?? [];
-        const extra = roundMessages(rounds, transient);
+        const extra = roundMessages(rounds, transient, replays);
         const estimate = baseEstimate + messagesTokens(extra, estimateTokens, MESSAGE_OVERHEAD);
         // Every round must fit (INVARIANTS.md C6, C7).
         if (!fits(estimate, this.#calibration, window)) {
@@ -228,7 +230,9 @@ export class ChatSession {
 
         // The last round offers no tools, so the loop always ends with an answer.
         const offered = tools !== null && tools.definitions.length > 0 && round < MAX_TOOL_ROUNDS - 1 ? tools.definitions : undefined;
-        const calls = await this.#streamRound(provider, { model: model.model, messages: [...base, ...extra], ...(offered ? { tools: offered } : {}) }, signal, live, window);
+        const sink: { replay?: unknown } = {};
+        const calls = await this.#streamRound(provider, { model: model.model, messages: [...base, ...extra], ...(offered ? { tools: offered } : {}) }, signal, live, window, sink);
+        if (sink.replay !== undefined) replays.set(rounds.length, sink.replay);
         if (calls === null) {
           if (tools?.fenced && run === this.#run) await this.#extractFenced(tools.fenced);
           return;
@@ -278,7 +282,7 @@ export class ChatSession {
    * Stream one request. Returns the tool calls if the round ended in some (and tools were offered);
    * otherwise ends the reply and returns null.
    */
-  async #streamRound(provider: ChatProvider, req: ChatRequest, signal: AbortSignal, live: () => boolean, window: number): Promise<ToolCall[] | null> {
+  async #streamRound(provider: ChatProvider, req: ChatRequest, signal: AbortSignal, live: () => boolean, window: number, sink: { replay?: unknown } = {}): Promise<ToolCall[] | null> {
     const iterator = provider.stream(req, signal)[Symbol.asyncIterator]();
     const calls: ToolCall[] = [];
     let pendingError: string | undefined;
@@ -312,6 +316,12 @@ export class ChatSession {
             break;
           case 'error':
             pendingError = event.message;
+            break;
+          case 'replay':
+            sink.replay = event.data; // in memory, for this reply only
+            break;
+          case 'notice':
+            this.#updateReply((r) => ({ ...r, notice: r.notice ? `${r.notice} ${event.message}` : event.message }));
             break;
           case 'done':
             if ((event.reason === 'stop' || event.reason === 'length') && calls.length > 0) return calls;

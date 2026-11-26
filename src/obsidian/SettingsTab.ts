@@ -4,6 +4,7 @@
 import { type App, Notice, type Plugin, PluginSettingTab, SecretComponent, Setting } from 'obsidian';
 import { confirm } from './ConfirmModal';
 import { renderPresetSettings } from './PresetSettings';
+import { renderEndpointSettings } from './EndpointSettings';
 import type { PresetLibrary } from '../core/presets/library';
 import {
   type AttachmentMode,
@@ -12,6 +13,7 @@ import {
   type SearchProviderId,
   type SettingsPatch,
   type SettingsStore,
+  type Endpoint,
   normaliseBaseUrl,
 } from '../core/settings';
 
@@ -34,6 +36,8 @@ export interface SettingsHost extends Plugin {
   /** Delete all AI edit history. */
   clearEditHistory(): Promise<void>;
   presets: PresetLibrary;
+  /** Contact an OpenAI- or Anthropic-compatible server and describe what it has. */
+  checkEndpoint(endpoint: Endpoint): Promise<string>;
 }
 
 const DISPLAY_LABELS: Record<DisplayMode, string> = {
@@ -107,6 +111,24 @@ export class LektorSettingTab extends PluginSettingTab {
             }
           });
       });
+
+    renderEndpointSettings(
+      this.app,
+      containerEl,
+      {
+        endpoints: () => this.host.settingsStore.settings.models.endpoints,
+        save: async (endpoints) => {
+          const result = this.host.settingsStore.update({ models: { endpoints } });
+          if (!result.ok) {
+            new Notice(`Lektor: ${result.problems[0]?.message ?? 'that endpoint is not allowed.'}`);
+            return false;
+          }
+          return this.save();
+        },
+        check: (e) => this.host.checkEndpoint(e),
+      },
+      () => this.display(),
+    );
 
     // Context
     new Setting(containerEl).setName('Context').setHeading();

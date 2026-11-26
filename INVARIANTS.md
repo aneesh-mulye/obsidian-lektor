@@ -729,6 +729,103 @@ Note for future runs: Obsidian opens Settings in a separate window here (`active
 
 The user's own Obsidian profile was unchanged before and after.
 
+## Milestone 9: OpenAI- and Anthropic-compatible adapters
+
+Decisions (2026-11-26, before milestone 9):
+
+- **Keys:** any number of named endpoints, each of kind OpenAI- or Anthropic-compatible, at any http(s) URL. An endpoint may name an Obsidian secret holding an API key. The key is read only when a request is sent, and is never stored in Lektor's settings or chats.
+- **Raw HTTP:** both adapters speak their protocol directly, through `Http.ts` (the network gate is unchanged), with no SDK.
+- **Capabilities:** each endpoint has settings for context length, tool calling, images and (Anthropic) output limit. What the server reports wins: Anthropic's `max_input_tokens` and `image_input`, vLLM's `max_model_len`, LM Studio's `/api/v0/models`, llama.cpp's `/props`.
+- **CORS:** replies stream through `fetch`. If the request fails before any response arrives (a server that doesn't allow Obsidian's origin), Lektor sends it once through Obsidian's `requestUrl`, which isn't subject to CORS but doesn't stream. The reply then arrives all at once, with a notice saying why.
+- **Claude's thinking:** the thinking blocks Claude returns with a tool call (signatures included) are sent back unchanged in that turn for the rest of the reply. They are kept in memory only, and later messages start without them.
+
+Shared generator, the **wire world**: random `ChatRequest`s (system messages anywhere, user messages with and without images, assistant turns with text and tool calls, tool results, Unicode everywhere) and random valid SSE streams of each protocol (text, reasoning or thinking, tool calls whose arguments arrive in random fragments, parallel tool calls, usage, every stop reason, error events, pings and comments), cut into random chunks with LF or CRLF line ends.
+
+### E1. Every stream ends exactly once (both adapters) — active
+
+`tests/core/compat.property.test.ts`
+
+- **Generator:** the wire world's streams, plus a random HTTP status, error bodies, malformed `data:` lines, a stream cut off before its end, a thrown network error, and an abort after a random number of events.
+- **Properties:**
+  - The O1 contract holds: `stream()` never throws, and yields events then exactly one `done`, last.
+  - The text, reasoning and tool calls yielded are exactly what the server sent, whatever the chunking. Each tool call's arguments are the concatenated fragments, parsed as JSON (or left as the string if they aren't JSON, for the registry to reject).
+  - Stop reasons map faithfully. A finished reply, including one that ends in tool calls, is `stop`. A cut-off one is `length`. Claude's `refusal` becomes an error, never a silent success. A stream that ends without its final event is an error.
+  - Usage reports the server's numbers. For Anthropic, input counts the cached tokens too, so calibration sees the whole prompt.
+- **Counterexample means:** a reply hangs, is shown complete when it wasn't, loses or garbles text, or runs a tool call the model never finished.
+
+### E2. Requests carry exactly the conversation, only to the endpoint (both adapters) — active
+
+`tests/core/compat.property.test.ts`
+
+- **Generator:** the wire world's requests × random endpoint settings (base URL, key or none, limits).
+- **Properties:**
+  - **Where requests go:** only to the endpoint's own URLs. For OpenAI-compatible endpoints that is `<base>/chat/completions` and `<base>/models`, plus LM Studio's and llama.cpp's info URLs on the same server. For Anthropic-compatible endpoints it is `<base>/v1/messages` and `<base>/v1/models`.
+  - **The key:** if set, it appears only in the auth header (`Authorization: Bearer` or `x-api-key`), never in a URL or a body. With no key, there is no auth header.
+  - **OpenAI shape:** every message keeps its role, content and order. An assistant turn's tool calls carry their ids, and each tool result answers its call's id. Images are sent only in user messages, as `data:` URLs of the exact base64.
+  - **Anthropic shape:** every system message, in order, goes into the top-level `system`. Messages alternate correctly: tool results become one user turn of `tool_result` blocks, answering their `tool_use` ids, with any images of that round after them. Text and images are exact.
+  - **Thinking replay:** Claude's signed thinking blocks from earlier rounds of the same reply come back unchanged, before their turn's `tool_use` blocks, and nowhere else.
+  - **Nothing extra:** neither shape includes anything the user or Lektor didn't put in the conversation.
+- **Counterexample means:** data reaches a host the user didn't configure, a key leaks, or the model is sent a different conversation from the one shown.
+
+### E3. The key stays out of storage — active
+
+`tests/core/compat.property.test.ts` and `tests/core/settings.property.test.ts`
+
+- **Property:** settings hold only the secret's name, never a key. A key never reaches the settings file, chat history, notices or error messages, even when the server echoes the request or its error body contains the key.
+- **Counterexample means:** a key ends up in `data.json` or a chat file, which may be synced or shared.
+
+### E4. Falling back to requestUrl never sends twice — active
+
+`tests/core/compat.property.test.ts`
+
+- **Generator:** a primary client that fails before responding, fails after starting a response, succeeds, or is aborted; and a fallback client that does the same.
+- **Property:**
+  - The fallback is used only when the primary failed before any response, and not on an abort.
+  - Once a response has started, nothing is retried.
+  - After one fallback, that endpoint goes straight to the fallback client for the rest of the session.
+  - The caller is told once that streaming is unavailable.
+- **Counterexample means:** a request is sent to the server twice, or Stop starts a second request.
+
+### S10. Endpoint settings — active
+
+`tests/core/settings.property.test.ts`
+
+- **Properties:**
+  - Version-5 settings migrate to version 6 losslessly, with no endpoints.
+  - Endpoint ids are unique, and any invalid endpoint is refused with a reason.
+  - A stored endpoint list that can't be read loses only the bad endpoints, never the other settings.
+
+### Regressions and mutation testing (milestone 9)
+
+- **Seed 892126910 was a mistake in the test:** random tool arguments can contain the text "sig", which the E2 check took for leaked replay data. The check now looks for a distinctive marker.
+- **Mutation testing:** 20 mutants of the adapters, the SSE decoder, the fallback client and the replay wiring, all killed. They covered:
+  - tool-call names concatenated, unsorted calls, and a missing `[DONE]` accepted;
+  - `reasoning_content` ignored, and refusals passed as success;
+  - cached input left out of usage, and unsigned or tool-less thinking replayed, or replayed after `tool_use`;
+  - same-role turns left unmerged, and an empty key header sent;
+  - an output cap ignored, a CRLF split mishandled, and unscrubbed errors;
+  - the fallback taken on abort, or not kept after it was taken.
+
+### Checked in a real Obsidian (milestone 9)
+
+On 2026-11-27, in a separate instance, with `qwen3.8:27b` served through Ollama 0.40.17's own OpenAI-compatible (`/v1`) and Anthropic-compatible (`/v1/messages`) APIs. These were set up as two endpoints, the OpenAI one with a key from SecretStorage. The stored version-4 settings with endpoints migrated to version 6.
+
+- **Picker:** it listed "Ollama · qwen3.8:27b", "Ollama (OpenAI) · qwen3.8:27b" and "Ollama (Anthropic) · qwen3.8:27b".
+- **Anthropic-compatible, Proofread:** three requests to `/v1/messages`.
+  - **The request:** keys `model, max_tokens, system, messages, tools, stream`; the context and preset prompt as two top-level system blocks; tools `request_context` and `report_findings`; `max_tokens` 16384.
+  - **Headers:** only `anthropic-version` among the auth headers (no key set), and no browser-access header (not anthropic.com).
+  - **Round 2:** it sent `user:text, assistant:tool_use, user:tool_result`, and findings appeared.
+- **OpenAI-compatible, with a key:**
+  - The `Authorization` header was exactly `Bearer <key>`, and the body never contained the key.
+  - It offered the usual tools, sent `stream_options: {include_usage: true}`, and streamed through `fetch` with no notice.
+- **CORS fallback:** the page's `fetch` to `/v1/chat/completions` was made to fail before any response. Lektor sent the request once through `requestUrl`, the reply arrived whole, and it carried the notice "This server doesn’t allow Obsidian to stream replies (CORS)…".
+- **Settings:**
+  - Both endpoints were listed with their kind, address and key name.
+  - "Test connection" on the Anthropic one answered "Connected to Ollama (Anthropic): 1 model (qwen3.8:27b)."
+- **The key on disk:** absent from `data.json` and from every chat file. `data.json` kept only the secret's name.
+
+The user's own Obsidian profile was unchanged before and after.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.

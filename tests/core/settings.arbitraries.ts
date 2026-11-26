@@ -93,12 +93,32 @@ export const validV3Settings = fc.record({
 
 export const validV4Settings = fc.tuple(validV3Settings, toolSettings).map(([v3, tools]) => ({ ...v3, version: 4 as const, tools }));
 
-export const validSettings: fc.Arbitrary<Settings> = fc
+export const validV5Settings = fc
   .tuple(validV4Settings, fc.subarray(['proofread', 'garden-paths', 'fact-check', 'mine']))
   .map(([v4, hidden]) => ({ ...v4, version: 5 as const, presets: { hidden } }));
 
+/** An OpenAI- or Anthropic-compatible endpoint (INVARIANTS.md S10). */
+export const endpoint = fc.record({
+  id: fc.stringMatching(/^[a-z0-9][a-z0-9-]{0,31}$/),
+  name: fc.constantFrom('LM Studio', 'vLLM box', 'Anthropic', 'Ollama (OpenAI)', 'ünïcode'),
+  kind: fc.constantFrom('openai' as const, 'anthropic' as const),
+  baseUrl,
+  secret: secretName,
+  contextLength: fc.integer({ min: 2048, max: 10_000_000 }),
+  tools: fc.boolean(),
+  images: fc.boolean(),
+  maxOutput: fc.integer({ min: 256, max: 1_000_000 }),
+  thinking: fc.boolean(),
+  models: fc.array(fc.constantFrom('qwen3.8:27b', 'claude-opus-5-5', 'llama-3'), { maxLength: 3 }),
+});
+
+export const validSettings: fc.Arbitrary<Settings> = fc
+  .tuple(validV5Settings, fc.uniqueArray(endpoint, { selector: (e) => e.id, maxLength: 4 }))
+  .map(([v5, endpoints]) => ({ ...v5, version: 6 as const, models: { ...v5.models, endpoints } }));
+
 /** Non-exclusion leaves, each with a generator of values that must be rejected. */
 export const LEAVES: Record<string, fc.Arbitrary<unknown>> = {
+  'models.endpoints': fc.oneof(fc.constant('lm-studio'), fc.constant(null), fc.constant(3), fc.constant({ id: 'x' })),
   'presets.hidden': fc.oneof(fc.constant('proofread'), fc.constant([1]), fc.constant(['Bad Id']), fc.constant(['a', 'a']), fc.constant(null)),
   'review.defaultDisplayMode': fc.oneof(
     fc.string().filter((s) => !(DISPLAY_MODES as readonly string[]).includes(s)),

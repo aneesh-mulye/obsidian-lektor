@@ -26,7 +26,8 @@ import { SafeMarkdown } from './SafeMarkdown';
 
 export interface SidebarProps {
   manager: ChatManager;
-  providers: readonly ChatProvider[];
+  /** The backends as they are now (Ollama, then each configured endpoint). */
+  providers: () => readonly ChatProvider[];
   /** Asks the user to confirm, then clears every chat. */
   clearAllChats: () => Promise<void>;
   /** The context chips; absent if the context system is unavailable. */
@@ -55,12 +56,12 @@ function useRunnable(presets: PresetsUi | undefined): readonly Preset[] {
 }
 
 /** The model's capabilities (null while unknown). */
-function useCapabilities(providers: readonly ChatProvider[], model: ModelRef | null): Capabilities | null {
+function useCapabilities(providers: () => readonly ChatProvider[], model: ModelRef | null): Capabilities | null {
   const [caps, setCaps] = useState<Capabilities | null>(null);
   useEffect(() => {
     let alive = true;
     setCaps(null);
-    const provider = model ? providers.find((p) => p.id === model.provider) : undefined;
+    const provider = model ? providers().find((p) => p.id === model.provider) : undefined;
     if (provider && model) {
       provider.capabilities(model.model).then(
         (c) => alive && setCaps(c),
@@ -173,7 +174,7 @@ function toolsState(on: boolean, caps: Capabilities | null, searchConfigured: bo
 function Header(props: {
   chat: Chat;
   manager: ChatManager;
-  providers: readonly ChatProvider[];
+  providers: () => readonly ChatProvider[];
   caps: Capabilities | null;
   searchConfigured: boolean;
   historyOpen: boolean;
@@ -203,7 +204,7 @@ function Header(props: {
     const rect = ev.currentTarget.getBoundingClientRect();
     setLoading(true);
     const menu = new Menu();
-    for (const provider of providers) {
+    for (const provider of providers()) {
       try {
         const models = await provider.listModels();
         if (models.length === 0) menu.addItem((i) => i.setTitle(`${provider.label}: no models installed`).setDisabled(true));

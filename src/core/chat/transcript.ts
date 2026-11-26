@@ -26,15 +26,17 @@ export function toRequestMessages(messages: readonly Message[]): ChatMessage[] {
  * the calls that finished, then one tool message per finished call. Calls
  * that never got a result (the user stopped) are left out.
  */
-export function roundMessages(rounds: readonly ToolRound[], live?: ReadonlyMap<string, Transient>): ChatMessage[] {
+export function roundMessages(rounds: readonly ToolRound[], live?: ReadonlyMap<string, Transient>, replays?: ReadonlyMap<number, unknown>): ChatMessage[] {
   const out: ChatMessage[] = [];
-  for (const round of rounds) {
+  for (const [index, round] of rounds.entries()) {
     const done = round.calls.filter((c) => c.result !== undefined);
     if (done.length === 0) {
       if (round.text !== '') out.push({ role: 'assistant', content: round.text });
       continue;
     }
-    out.push({ role: 'assistant', content: round.text, toolCalls: done.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })) });
+    // Within the reply, the provider's replay data (Claude's signed thinking) goes back with its turn (INVARIANTS.md E2).
+    const replay = replays?.get(index);
+    out.push({ role: 'assistant', content: round.text, toolCalls: done.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })), ...(replay !== undefined ? { replay } : {}) });
     // Within the reply that made them, results such as shared notes are sent in full (INVARIANTS.md A4).
     for (const c of done) out.push({ role: 'tool', content: live?.get(c.id)?.content ?? c.result!.content, toolName: c.name, toolCallId: c.id });
     const images = done.flatMap((c) => live?.get(c.id)?.images ?? []);

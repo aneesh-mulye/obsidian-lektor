@@ -7,6 +7,11 @@ import { ChatManager } from './core/chat/manager';
 import type { Depth } from './core/context/state';
 import { OllamaProvider } from './core/providers/ollama';
 import type { ChatProvider } from './core/providers/types';
+import { AnthropicCompatProvider } from './core/providers/anthropic';
+import type { EndpointAccess } from './core/providers/compat';
+import { OpenAICompatProvider } from './core/providers/openai';
+import { ProviderError } from './core/providers/stream';
+import type { ReadonlyEndpoint } from './core/settings';
 import { SettingsStore } from './core/settings';
 import { confirm } from './obsidian/ConfirmModal';
 import { ContextBroker } from './obsidian/ContextBroker';
@@ -35,6 +40,8 @@ import type { ContextUi } from './obsidian/ui/ContextBar';
 
 export default class LektorPlugin extends Plugin {
   editLog!: EditLog;
+  /** For the settings tab's "Test connection" on an endpoint. */
+  checkEndpoint: (e: ReadonlyEndpoint) => Promise<string> = () => Promise.resolve('Lektor is still loading.');
   /** Presets (DESIGN.md § Presets): the built-ins and the files in `presets/`. */
   presets!: PresetLibrary;
   private review!: ReviewManager;
@@ -54,8 +61,46 @@ export default class LektorPlugin extends Plugin {
 
     const http = new FetchHttpClient();
     this.ollama = new OllamaProvider(http, () => settings().models.ollama.baseUrl, () => settings().models.ollama.contextLength);
-    const providers: ChatProvider[] = [this.ollama];
-    const byId = new Map(providers.map((p) => [p.id, p]));
+    // OpenAI- and Anthropic-compatible endpoints (DESIGN.md § Decided, before milestone 9): one provider each,
+    // rebuilt when its settings change. Keys are read from SecretStorage by name, only when a request is sent.
+    const compat = new Map<string, { sig: string; provider: ChatProvider }>();
+    const makeProvider = (e: ReadonlyEndpoint): ChatProvider => {
+      const current = () => settings().models.endpoints.find((x) => x.id === e.id) ?? e;
+      const access: EndpointAccess = {
+        settings: current,
+        key: () => {
+          const name = current().secret;
+          if (!name) return '';
+          const key = this.app.secretStorage.getSecret(name);
+          if (!key) throw new ProviderError(`The secret "${name}" for ${current().name} is empty or missing. Set it in Lektor's settings.`);
+          return key;
+        },
+        http: new FetchHttpClient(),
+        fallback: new RequestUrlHttpClient(),
+      };
+      return e.kind === 'openai' ? new OpenAICompatProvider(access) : new AnthropicCompatProvider(access);
+    };
+    this.checkEndpoint = async (e) => {
+      try {
+        const models = await makeProvider(e).listModels();
+        return models.length === 0 ? `Connected to ${e.name}, but it lists no models.` : `Connected to ${e.name}: ${models.length} model${models.length === 1 ? '' : 's'} (${models.slice(0, 3).map((m) => m.id).join(', ')}${models.length > 3 ? ', …' : ''}).`;
+      } catch (err) {
+        return err instanceof Error && err.message ? err.message : `Could not reach ${e.name}.`;
+      }
+    };
+    const providers = (): ChatProvider[] => {
+      const out: ChatProvider[] = [this.ollama];
+      for (const e of settings().models.endpoints) {
+        const sig = JSON.stringify(e);
+        let entry = compat.get(e.id);
+        if (!entry || entry.sig !== sig) {
+          entry = { sig, provider: makeProvider(e) };
+          compat.set(e.id, entry);
+        }
+        out.push(entry.provider);
+      }
+      return out;
+    };
 
     this.broker = new ContextBroker(this.app, {
       patterns: () => settings().context.excludedFolders,
@@ -125,7 +170,7 @@ export default class LektorPlugin extends Plugin {
     await presets.load();
 
     this.chats = new ChatManager({
-      providers: { get: (id) => byId.get(id) },
+      providers: { get: (id) => providers().find((p) => p.id === id) },
       clock: { now: () => Date.now() },
       newId: () => crypto.randomUUID(),
       history,

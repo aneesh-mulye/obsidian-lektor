@@ -45,7 +45,16 @@ export interface ChatImage {
 export type ChatMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string; images?: readonly ChatImage[] }
-  | { role: 'assistant'; content: string; toolCalls?: ToolCall[] }
+  | {
+      role: 'assistant';
+      content: string;
+      toolCalls?: ToolCall[];
+      /**
+       * Provider data to send back unchanged with this turn, within the reply that produced it
+       * (Claude's signed thinking blocks before a tool call). Never stored.
+       */
+      replay?: unknown;
+    }
   | { role: 'tool'; content: string; toolName: string; toolCallId: string };
 
 export interface ChatRequest {
@@ -67,6 +76,10 @@ export type ChatEvent =
   | { type: 'reasoning'; text: string }
   | { type: 'tool_call'; call: ToolCall }
   | { type: 'usage'; inputTokens?: number; outputTokens?: number }
+  /** Data the provider needs back with this turn if the reply continues (see ChatMessage.replay). */
+  | { type: 'replay'; data: unknown }
+  /** Something the user should know about this reply (e.g. it could not be streamed). */
+  | { type: 'notice'; message: string }
   | { type: 'error'; message: string }
   | { type: 'done'; reason: DoneReason };
 

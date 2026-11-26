@@ -18,7 +18,7 @@ Lektor is an Obsidian sidebar chat that sees only the context you hand it, uses 
 **Non-goals (v1)**
 
 - Mobile, Windows support (Linux first; macOS should work but is untested).
-- Cloud API keys (the provider layer must make them a small addition later).
+- Cloud-specific features. (Cloud API keys were here; since milestone 9 any OpenAI- or Anthropic-compatible endpoint may carry a key, see Decided.)
 - Agents that roam the vault, run shell commands, or write files on their own.
 - RAG or embeddings over the whole vault.
 
@@ -441,6 +441,11 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
   - Preset files live in `<plugin folder>/presets/*.md`, read and written through PluginStorage, not in `.lektor/presets`. That keeps hard rule 2's single exception as it is. The plugin folder is inside the vault's hidden config folder, so presets are just as hidden and travel with the vault the same way.
   - A preset runs as the next message of the chat that is open. Its prompt, tools, caps and model apply to that reply only, and the message keeps a snapshot of the preset, so regenerating it gives the same request.
   - The built-ins live in code. Saving an edited built-in writes a file with the same id, which takes precedence. "Reset to built-in" deletes that file, and a setting hides a built-in.
+- *(2026-11-26, before milestone 9)* OpenAI- and Anthropic-compatible endpoints.
+  - Any number of named endpoints, each OpenAI- or Anthropic-compatible, at any http(s) URL, with an optional API key held in Obsidian's SecretStorage (settings keep only the secret's name). This makes cloud APIs possible too; the v1 non-goal is relaxed to "no cloud-specific features".
+  - Both adapters speak raw HTTP through the single network file. Replies stream through `fetch`; a server that refuses Obsidian's origin (CORS) gets the request once through `requestUrl`, which doesn't stream, and the reply says so.
+  - Capabilities come from endpoint settings, overridden by whatever the server reports (Anthropic's model list, vLLM, LM Studio, llama.cpp).
+  - Claude's signed thinking blocks are sent back unchanged within a reply's tool loop, in memory only.
 - *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.

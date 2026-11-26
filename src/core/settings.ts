@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 
-export const SETTINGS_VERSION = 5;
+export const SETTINGS_VERSION = 6;
 
 /** The effective exclusion list while the stored one is unreadable. */
 export const EXCLUDE_EVERYTHING: readonly string[] = Object.freeze(['**']);
@@ -79,11 +79,55 @@ const BaseUrl = z
 
 // eslint-disable-next-line no-control-regex -- control characters are exactly what we reject
 const NO_CONTROL = /^[^\u0000-\u001f\u007f]+$/;
+// eslint-disable-next-line no-control-regex -- control characters are exactly what we reject
+const NO_CONTROL_NAME = /^[^\u0000-\u001f\u007f\u2028\u2029]+$/;
 
 export const ModelRefSchema = z.strictObject({
   provider: z.string().max(64).regex(/^[a-z][a-z0-9-]*(:[a-z0-9-]+)?$/),
   model: z.string().min(1).max(256).regex(NO_CONTROL),
 });
+
+export const ENDPOINT_KINDS = ['openai', 'anthropic'] as const;
+export type EndpointKind = (typeof ENDPOINT_KINDS)[number];
+export const MAX_ENDPOINTS = 20;
+
+/**
+ * An OpenAI- or Anthropic-compatible server (DESIGN.md § Backends; INVARIANTS.md S10, E3). The key
+ * lives in Obsidian's SecretStorage; only the secret's name is stored here.
+ */
+export const EndpointSchema = z.strictObject({
+  /** Part of the provider id (`openai-compat:<id>`), so chats keep pointing at it. */
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/),
+  name: z.string().trim().min(1).max(60).regex(NO_CONTROL_NAME),
+  kind: z.enum(ENDPOINT_KINDS),
+  /** OpenAI-compatible: up to and including /v1. Anthropic-compatible: without /v1. */
+  baseUrl: z
+    .string()
+    .max(2048)
+    .refine((s) => normaliseBaseUrl(s) === s, 'Must be an http(s) URL without credentials, query or trailing slash.'),
+  /** Name of the Obsidian secret holding the API key ('' = no key). */
+  secret: SecretName,
+  /** The budget requests are checked against, unless the server reports its own. */
+  contextLength: z.int().min(2048).max(10_000_000),
+  /** Whether its models call tools natively (otherwise the fenced-block fallback). */
+  tools: z.boolean(),
+  /** Whether its models take images, unless the server says. */
+  images: z.boolean(),
+  /** Anthropic-compatible: the `max_tokens` sent with every request, unless the server reports a lower cap. */
+  maxOutput: z.int().min(256).max(1_000_000),
+  /** Anthropic-compatible: ask for a readable summary of the model's thinking (Claude models). */
+  thinking: z.boolean(),
+  /** Extra model ids to offer, for servers that can't list theirs. */
+  models: z.array(z.string().trim().min(1).max(256).regex(NO_CONTROL_NAME)).max(50),
+});
+export type Endpoint = z.infer<typeof EndpointSchema>;
+
+const Endpoints = z
+  .array(EndpointSchema)
+  .max(MAX_ENDPOINTS)
+  .refine((list) => new Set(list.map((e) => e.id)).size === list.length, 'Two endpoints have the same id.');
+
+const ENDPOINTS_PATH = 'models.endpoints';
 
 const SECTIONS = {
   models: z.strictObject({
@@ -94,6 +138,8 @@ const SECTIONS = {
     }),
     /** The model last picked in the sidebar; new chats start with it. */
     defaultModel: ModelRefSchema.nullable(),
+    /** OpenAI- and Anthropic-compatible servers. */
+    endpoints: Endpoints,
   }),
   review: z.strictObject({
     defaultDisplayMode: z.enum(DISPLAY_MODES),
@@ -150,9 +196,12 @@ type DeepReadonly<T> = T extends readonly (infer U)[]
 /** Settings as handed out by the store: frozen at runtime, read-only in the type. */
 export type ReadonlySettings = DeepReadonly<Settings>;
 
+/** An endpoint as the store hands it out. */
+export type ReadonlyEndpoint = DeepReadonly<Endpoint>;
+
 export const DEFAULT_SETTINGS: Settings = deepFreeze({
   version: SETTINGS_VERSION,
-  models: { ollama: { baseUrl: 'http://127.0.0.1:11434', contextLength: 32768 }, defaultModel: null },
+  models: { ollama: { baseUrl: 'http://127.0.0.1:11434', contextLength: 32768 }, defaultModel: null, endpoints: [] },
   review: { defaultDisplayMode: 'inline' },
   context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3, respectObsidianExclusions: true },
   tools: {
@@ -207,6 +256,8 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
   },
   // 4 → 5: presets (which built-ins are hidden: none).
   4: (raw) => ({ ...raw, version: 5, ...(Object.hasOwn(raw, 'presets') ? {} : { presets: { hidden: [] } }) }),
+  // 5 → 6: OpenAI- and Anthropic-compatible endpoints (none).
+  5: (raw) => ({ ...raw, version: 6, ...(Object.hasOwn(raw, 'models') ? { models: addMissing(raw['models'], 'endpoints', []) } : {}) }),
 };
 
 /** A copy of `obj` with `key` added, if obj is an object lacking it; otherwise obj unchanged (salvage reports anything wrong). */
@@ -409,6 +460,17 @@ function salvageObject(
     const value = own(stored, field);
     if (schema instanceof z.ZodObject) {
       out[field] = salvageObject(schema.shape, value, out[field], fieldPath, st, report);
+      continue;
+    }
+    // One unreadable endpoint is dropped on its own; the others are kept (INVARIANTS.md S10).
+    if (fieldPath === ENDPOINTS_PATH && Array.isArray(value)) {
+      const kept: Endpoint[] = [];
+      value.forEach((item: unknown, i) => {
+        const e = EndpointSchema.safeParse(item);
+        if (e.success && !kept.some((k) => k.id === e.data.id) && kept.length < MAX_ENDPOINTS) kept.push(e.data);
+        else st.problems.push({ path: `${fieldPath}.${i}`, message: 'This endpoint could not be read; it was dropped.' });
+      });
+      out[field] = kept;
       continue;
     }
     const parsed = schema.safeParse(value);
