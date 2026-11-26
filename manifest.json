@@ -1,0 +1,9 @@
+{
+  "id": "lektor",
+  "name": "Lektor",
+  "version": "0.1.0",
+  "minAppVersion": "1.11.4",
+  "description": "Chat with local or CLI models about your notes. It sees only what you give it and changes nothing without your approval.",
+  "author": "Aneesh Mulye",
+  "isDesktopOnly": true
+}

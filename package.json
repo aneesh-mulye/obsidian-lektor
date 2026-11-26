@@ -1,0 +1,35 @@
+{
+  "name": "obsidian-lektor",
+  "version": "0.1.0",
+  "description": "An Obsidian sidebar chat that sees only the context you give it and changes nothing without per-hunk approval.",
+  "main": "main.js",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "author": "Aneesh Mulye",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc --noEmit && node esbuild.config.mjs production",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:ci": "CI=1 vitest run",
+    "version": "node version-bump.mjs && git add manifest.json versions.json"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.4",
+    "@types/react": "18.3.32",
+    "@types/react-dom": "18.3.7",
+    "esbuild": "0.28.2",
+    "eslint": "10.15.0",
+    "fast-check": "4.11.0",
+    "obsidian": "1.14.4",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.74.0",
+    "vitest": "5.1.2"
+  }
+}

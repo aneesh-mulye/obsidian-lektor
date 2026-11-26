@@ -1,0 +1,46 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Aneesh Mulye
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Obsidian CSS variables only, so themes and dark mode work.
+ */
+
+.lektor-sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.lektor-conversation {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.lektor-placeholder {
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: var(--size-4-8);
+}
+
+.lektor-settings-warning {
+  color: var(--text-warning);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-2) var(--size-4-3);
+  margin-bottom: var(--size-4-4);
+}
+
+.lektor-exclusions {
+  flex-wrap: wrap;
+}
+
+.lektor-exclusions .setting-item-control {
+  flex: 1 1 100%;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.lektor-exclusions textarea {
+  min-height: 8em;
+  font-family: var(--font-monospace);
+}
