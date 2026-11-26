@@ -6,7 +6,8 @@
  * accepted hunk, created note and revert, appended per note to
  * `history/<note-id>.jsonl` and never rewritten. A small index in
  * `meta/edit-log-index.json` maps note ids to current paths, so a note keeps
- * its history when renamed. Cleared only on request.
+ * its history when renamed. Cleared only on request. Undo and redo in the
+ * editor are logged too, as a revert and a new accept (INVARIANTS.md B6).
  */
 
 import { z } from 'zod';
@@ -32,6 +33,8 @@ export interface LogEntry {
   readonly hunkId?: string;
   /** For a revert: the entry it undid. */
   readonly revertOf?: string;
+  /** Not a click in Lektor: the note's own undo took the change out, or redo put it back. */
+  readonly via?: 'undo' | 'redo';
 }
 
 const Entry = z.strictObject({
@@ -49,6 +52,7 @@ const Entry = z.strictObject({
   proposalId: z.string().optional(),
   hunkId: z.string().optional(),
   revertOf: z.string().optional(),
+  via: z.enum(['undo', 'redo']).optional(),
 });
 
 const Index = z.strictObject({ version: z.literal(1), notes: z.record(z.string(), z.string()) });

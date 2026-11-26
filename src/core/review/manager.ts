@@ -3,8 +3,13 @@
 
 /**
  * Accept, reject, create and revert: the only code that asks the EditApplier
- * to change the vault, and every public method here is a user's click
+ * to change the vault, and every public method that writes is a user's click
  * (hard rule 1; INVARIANTS.md W3–W6). Changes run one at a time.
+ *
+ * It also follows the note's own undo and redo (INVARIANTS.md B6): when the
+ * note is back to exactly the text it had before an accept, that hunk is
+ * pending again; when it is back to exactly the text right after, it is
+ * accepted again. That changes only cards and the log, never the vault.
  */
 
 import type { Chat, Clock } from '../chat/types';
@@ -12,7 +17,7 @@ import type { EditLog, LogEntry } from './log';
 import { fingerprint } from './fingerprint';
 import { editTextNow, locateHunk } from './proposals';
 import { type RebaseResult, rebase, staleness } from './rebase';
-import type { EditApplier, EditProposal, NoteProposal, Proposal, Splice } from './types';
+import type { EditApplier, EditProposal, HunkRecord, NoteProposal, Proposal, Splice } from './types';
 
 /** Where a proposal lives: the chat session that made it. */
 export interface ProposalHost {
@@ -26,6 +31,48 @@ export type RevertOutcome = 'reverted' | 'conflict' | 'missing' | 'already';
 /** Characters kept on each side of a change, to find it again for a revert. */
 const CONTEXT = 40;
 
+/** An accept the review follows through the note's undo and redo. In memory only. */
+interface Followed {
+  readonly chatId: string;
+  readonly proposalId: string;
+  readonly hunkId: string;
+  /** Fingerprints of texts the note had before the accept: just before it, and the last text the review knew before that. */
+  readonly before: readonly string[];
+  /** Fingerprint of the text just after it. */
+  readonly after: string;
+  /** The proposal just before and just after the accept. */
+  readonly prior: EditProposal;
+  readonly next: EditProposal;
+  /** Its latest log entry (the accept, or the redo since). */
+  entry: LogEntry | null;
+  /** Whether the note has the change, as far as its text shows. */
+  inNote: boolean;
+  /** Whether its chat's card says so yet (a chat that isn't open catches up when it opens). */
+  shown: boolean;
+  /** Undone, and the text right after it can still come back. False once something else is accepted without it. */
+  redoable: boolean;
+}
+
+/** How many accepts are followed per note; older ones are forgotten. */
+const FOLLOWED_MAX = 100;
+
+/**
+ * `snapshot` (the proposal just before or after an accept), with the user's later decisions on its
+ * other hunks kept: a hunk rejected or dropped since stays so.
+ */
+function restore(snapshot: EditProposal, current: EditProposal, hunkId: string): EditProposal {
+  const now = new Map(current.hunks.map((h) => [h.id, h]));
+  return {
+    ...snapshot,
+    path: current.path,
+    hunks: snapshot.hunks.map((h): HunkRecord => {
+      const c = now.get(h.id);
+      if (h.id === hunkId || h.status !== 'pending' || !c || c.status === 'pending') return h;
+      return { ...h, status: c.status, ...(c.dropReason !== undefined ? { dropReason: c.dropReason } : {}) };
+    }),
+  };
+}
+
 export class ReviewManager {
   #queue: Promise<unknown> = Promise.resolve();
   /** Why a hunk or note card could not be applied, until it is tried again (shown on the card). */
@@ -37,6 +84,10 @@ export class ReviewManager {
    * the user's change exactly. In memory only; never stored.
    */
   readonly #seen = new Map<string, string>();
+  /** Accepts followed through undo and redo, per note, oldest first. */
+  readonly #followed = new Map<string, Followed[]>();
+  /** The fingerprint of the last text the review knew each note to have. */
+  readonly #last = new Map<string, string>();
   readonly #listeners = new Set<() => void>();
   #version = 0;
 
@@ -83,26 +134,31 @@ export class ReviewManager {
       let splice: Splice | null = null;
       let context = { before: '', after: '' };
       let expect = p.expect;
+      let states: { before: string; after: string } | null = null;
       const result = await this.deps.applier.apply(p.path, (text) => {
         splice = locateHunk(text, p, hunkId);
         if (splice) {
           context = { before: text.slice(Math.max(0, splice.from - CONTEXT), splice.from), after: text.slice(splice.to, splice.to + CONTEXT) };
+          const next = text.slice(0, splice.from) + splice.insert + text.slice(splice.to);
+          states = { before: fingerprint(text), after: fingerprint(next) };
           // Only if the note was as this review left it does it stay "as expected" afterwards.
-          if (fingerprint(text) === p.expect) {
-            const next = text.slice(0, splice.from) + splice.insert + text.slice(splice.to);
-            expect = fingerprint(next);
+          if (states.before === p.expect) {
+            expect = states.after;
             this.#seen.set(p.path, next);
           }
         }
         return splice;
       });
-      if (result === 'applied' && splice !== null) {
+      if (result === 'applied' && splice !== null && states !== null) {
         const s: Splice = splice;
+        const fp: { before: string; after: string } = states;
         host.updateProposal(proposalId, (q) =>
           q.kind !== 'edit' ? q : { ...q, expect, hunks: q.hunks.map((h) => (h.id === hunkId ? { ...h, status: 'accepted' } : h)) },
         );
         this.problems.delete(hunkId);
-        await this.deps.log.append(p.path, {
+        const next = this.edit(host, proposalId);
+        const followed = next ? this.#follow(p.path, { chatId: host.chat.id, proposalId, hunkId, before: fp.before, after: fp.after, prior: p, next }) : null;
+        const entry = await this.deps.log.append(p.path, {
           kind: 'hunk',
           before: p.edits[hunk.edit]!.find.slice(hunk.start, hunk.end),
           after: s.insert,
@@ -114,6 +170,7 @@ export class ReviewManager {
           proposalId,
           hunkId,
         });
+        if (followed) followed.entry = entry;
       } else {
         this.problems.set(hunkId, result === 'missing' ? `${p.path} no longer exists.` : 'The note has changed here since this was proposed, so this change no longer fits.');
       }
@@ -157,7 +214,8 @@ export class ReviewManager {
   noteChanged(host: ProposalHost, path: string, text: string): void {
     const previous = this.#seen.get(path);
     this.#seen.set(path, text);
-    let changed = false;
+    this.#track(path, text);
+    let changed = this.#sync(host);
     for (const p of Object.values(host.chat.proposals ?? {})) {
       if (p.kind !== 'edit' || p.path !== path || !p.hunks.some((h) => h.status === 'pending')) continue;
       if (fingerprint(text) === p.expect) {
@@ -180,11 +238,13 @@ export class ReviewManager {
   /** A note or folder was renamed: the open chat's proposals for it follow it. */
   renamed(host: ProposalHost, from: string, to: string): void {
     const moved = (path: string) => (path === from ? to : path.startsWith(`${from}/`) ? to + path.slice(from.length) : null);
-    for (const [path, text] of [...this.#seen]) {
-      const m = moved(path);
-      if (m === null) continue;
-      this.#seen.delete(path);
-      this.#seen.set(m, text);
+    for (const map of [this.#seen, this.#last, this.#followed] as Map<string, unknown>[]) {
+      for (const [path, value] of [...map]) {
+        const m = moved(path);
+        if (m === null) continue;
+        map.delete(path);
+        map.set(m, value);
+      }
     }
     let changed = false;
     for (const p of Object.values(host.chat.proposals ?? {})) {
@@ -255,6 +315,113 @@ export class ReviewManager {
   dismissNote(host: ProposalHost, proposalId: string): void {
     host.updateProposal(proposalId, (q): Proposal => (q.kind === 'note' && q.status === 'pending' ? { ...q, status: 'dismissed' } : q));
     this.changed();
+  }
+
+  /** Whether the review follows accepts in this note through undo and redo (so changes on disk matter). */
+  tracks(path: string): boolean {
+    return (this.#followed.get(path)?.length ?? 0) > 0;
+  }
+
+  /** A chat was opened: its cards catch up with undo and redo that happened while it wasn't. Never writes. */
+  sync(host: ProposalHost): void {
+    if (this.#sync(host)) this.changed();
+  }
+
+  /** Resolves once every queued change and log entry so far is done. */
+  settled(): Promise<void> {
+    return this.#queue.then(() => undefined);
+  }
+
+  /** Start following a new accept: anything undone before it can no longer be redone. */
+  #follow(path: string, r: Omit<Followed, 'before' | 'entry' | 'inNote' | 'shown' | 'redoable'> & { before: string }): Followed {
+    const last = this.#last.get(path);
+    const list = (this.#followed.get(path) ?? []).filter((f) => f.inNote || f.shown);
+    for (const f of list) if (!f.inNote) f.redoable = false;
+    const followed: Followed = { ...r, before: last !== undefined && last !== r.before ? [r.before, last] : [r.before], entry: null, inNote: true, shown: true, redoable: false };
+    list.push(followed);
+    this.#followed.set(path, list.slice(-FOLLOWED_MAX));
+    this.#last.set(path, r.after);
+    return followed;
+  }
+
+  /** The note's text is now `text`: which followed accepts does it still have? */
+  #track(path: string, text: string): void {
+    const fp = fingerprint(text);
+    this.#last.set(path, fp);
+    const list = this.#followed.get(path);
+    if (!list) return;
+    // Undo: back to a text the note had before an accept it still has. That accept, and every later one, are out.
+    // The texts known from before it: those before each accept up to it, and those right after the earlier ones it still has.
+    const undo = (from: number, to: number) => {
+      for (const u of list.slice(from, to + 1)) {
+        if (!u.inNote) continue;
+        u.inNote = false;
+        u.redoable = true;
+        this.#log(path, u, 'undo');
+      }
+    };
+    const latest = list.findLastIndex((r) => r.inNote);
+    for (let i = latest; i >= 0; i--) {
+      const r = list[i]!;
+      if (r.inNote && r.after === fp) return undo(i + 1, latest); // right after this one: the later ones are out
+      if (r.before.includes(fp)) return undo(i, latest);
+    }
+    // Redo: back to the text right after an undone accept. It, and the undone ones before it, are back.
+    for (let j = 0; j < list.length; j++) {
+      const r = list[j]!;
+      if (r.inNote || !r.redoable || r.after !== fp) continue;
+      for (const u of list.slice(0, j + 1)) {
+        if (u.inNote || !u.redoable) continue;
+        u.inNote = true;
+        this.#log(path, u, 'redo');
+      }
+      return;
+    }
+  }
+
+  /** Bring the chat's cards up to date with what the note has. Never writes. */
+  #sync(host: ProposalHost): boolean {
+    let changed = false;
+    for (const [path, list] of this.#followed) {
+      const mine = list.filter((r) => r.chatId === host.chat.id && r.shown !== r.inNote);
+      // Latest undo first and earliest redo first, so each snapshot builds on the one before.
+      for (const r of [...mine.filter((x) => !x.inNote).reverse(), ...mine.filter((x) => x.inNote)]) {
+        r.shown = r.inNote;
+        this.problems.delete(r.hunkId);
+        host.updateProposal(r.proposalId, (q) => {
+          if (q.kind !== 'edit') return q;
+          const own = q.hunks.find((h) => h.id === r.hunkId);
+          if (!own || (own.status === 'accepted') === r.inNote) return q;
+          return restore(r.inNote ? r.next : r.prior, q, r.hunkId);
+        });
+        changed = true;
+      }
+      const kept = list.filter((r) => r.inNote || r.shown || r.redoable);
+      if (kept.length === 0) this.#followed.delete(path);
+      else if (kept.length !== list.length) this.#followed.set(path, kept);
+    }
+    return changed;
+  }
+
+  /** Record an undo (as a revert of the accept) or a redo (as a new accept) in the AI history. */
+  #log(path: string, r: Followed, via: 'undo' | 'redo'): void {
+    void this.serial(async () => {
+      const e = r.entry;
+      if (!e) return;
+      const at = this.deps.clock.now();
+      if (via === 'undo') {
+        // A revert from the AI history that put the text back exactly is already logged.
+        if ((await this.deps.log.entries(path)).some((x) => x.revertOf === e.id)) return;
+        await this.deps.log.append(path, { kind: 'revert', before: e.after, after: e.before, contextBefore: e.contextBefore, contextAfter: e.contextAfter, at, revertOf: e.id, via });
+        return;
+      }
+      r.entry = await this.deps.log.append(path, {
+        kind: 'hunk', before: e.before, after: e.after, contextBefore: e.contextBefore, contextAfter: e.contextAfter, at,
+        ...(e.chatId !== undefined ? { chatId: e.chatId } : {}), ...(e.model ? { model: e.model } : {}),
+        ...(e.proposalId !== undefined ? { proposalId: e.proposalId } : {}), ...(e.hunkId !== undefined ? { hunkId: e.hunkId } : {}),
+        via,
+      });
+    });
   }
 
   /** Undo one logged change (a click on Revert in the AI history). */

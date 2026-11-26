@@ -509,6 +509,39 @@ Note for future runs: the test instance had a stray Obsidian Settings window ope
 
 - **Property:** for a chat in Prose mode, no request offers `propose_edit` or `propose_note`, and no fenced-edit instructions are added, whatever the model or context. The Prose instruction is sent instead (also checked through a real session in `tests/core/toolloop.property.test.ts`).
 
+### B6. Undo and redo in the editor move the card with them (stateful) — active
+
+Added after milestone 7, to close the gap where Ctrl+Z took an accepted change out of the note but its card still said "Accepted".
+
+`tests/core/undo.property.test.ts`, `fc.commands`, plus the W3 stateful run (where it must not disturb W3–W5).
+
+- **Rule:** the review remembers each accept in memory (never stored): the note's text just before it, the last text it knew before that, the text just after it, and the proposal as it was on each side. The editor reports every undo and redo step to it at once; typing may be reported late.
+  - **Undo:** when the note's text becomes exactly one of the texts it had before an accept it still has, that accept and every later one in the note are undone. Their hunks go back to pending, with the proposal as it was before each accept.
+  - **Redo:** when the note's text becomes exactly the text right after an undone accept, it is redone, together with the undone accepts before it. Its hunk goes back to accepted, with the proposal as it was right after. An accept undone before some later accept can't be redone this way, because that later accept was made without it.
+  - **The card follows when its chat is open:** a chat that isn't open catches up the moment it opens.
+  - **The log stays truthful:** an undo is logged as a revert of that accept, and a redo as a new accept, both marked as such. A revert from the AI history that already logged the reversal isn't logged twice.
+  - **Hard rule 1 is unaffected:** none of this writes to the vault. It changes only what the card says and what the log records.
+- **Generator:** the edit world in an editor-like fake with a linear undo history. Each change (accept, typing, paste) is one undo step; occasionally an accept joins the unreported typing before it, as CodeMirror groups quick adjacent changes. Two chats share the notes. Random sequences of propose, accept, accept all, reject, typing, undo, redo, a late report of typing, and switching chats.
+- **Properties:**
+  - **Soundness:** a hunk's card goes from Accepted to Pending only when the note's text is exactly one of that accept's before-texts, and from Pending (or Rejected) to Accepted only when it is exactly the text right after that accept or a later one.
+  - **Exactness:** a hunk that went back to pending, accepted again from the same text, writes exactly what its first accept wrote.
+  - **Decisions survive:** a hunk the user rejected, or a rebase dropped, keeps that status through undo and redo of other hunks.
+  - **The log matches the card:** for every hunk, its accepts minus its reverts in the log is 1 if the card says Accepted and 0 otherwise.
+  - **Completeness, with nothing but accepts, typing, undo and redo:** after undoing k steps, exactly the accepts in those steps are pending again, and after redoing j of them, exactly those are accepted again.
+- **Counterexample means:** the card says a change is in the note when Ctrl+Z took it out, or the other way round; or the AI history disagrees with the card.
+- **Known limit:** an undo that doesn't land exactly on a text the review knew from before the accept leaves the card as it is. For example, if the accept joined a run of typing that was never reported, the undo lands on text the review never saw. The card then says Accepted, exactly as before this fix.
+- **Regressions:** seed 757111334 was a mistake in the test's model (it let an accept join typing the review never saw); it is now the known-limit test. Mutation testing (14 mutants of the following code, all killed) added the cases where a note is restored on disk in one go, skipping the steps in between (both accepts out, both back, only the later one out), an undone accept in a chat that isn't open, and undo after a rename.
+
+**Checked in a real Obsidian (B6):** on 2026-11-26, in a separate instance, with `qwen3.8:27b` proofreading `Drafts/Essay` in Inline mode (four hunks):
+
+- **Accept:** ✓ in the editor changed the text, and the card went to "3 of 4 to review".
+- **Ctrl+Z:** the text matched the original exactly, the mark came back, and the card and pill read "4 of 4" / "4 pending". This confirmed that Obsidian's undo arrives as a CodeMirror `undo` event.
+- **Ctrl+Shift+Z:** the hunk was accepted again, with the text exactly as after the first accept.
+- **Undo, then ✓ again:** this wrote the same text as the first accept.
+- **The AI history** listed, oldest first: Accepted, Undone in the note, Redone in the note, Undone in the note, Accepted. The undone accepts showed "Reverted", and the latest showed Revert.
+
+The user's own Obsidian profile was unchanged.
+
 ### Checked in a real Obsidian (milestone 6)
 
 On 2026-11-26, in a separate instance, with `qwen3.8:27b` proofreading `fixtures/vault/Drafts/Essay.md` in a new chat, which started in Inline mode:
@@ -603,7 +636,7 @@ These come from `docs/DESIGN.md` § Testing. Each gets a full generator, propert
 3. **No write without accept:** active as W3.
 4. **Hunk algebra:** active as W1.
 5. **Rebase honesty:** active as B1.
-6. **Undo safety:** active as W4.
+6. **Undo safety:** active as W4 (reverts from the AI history) and B6 (Obsidian's own undo and redo).
 7. **History completeness:** active as W5.
 8. **Proposal validation:** active as W2.
 9. **Caps hold:** active as T2.

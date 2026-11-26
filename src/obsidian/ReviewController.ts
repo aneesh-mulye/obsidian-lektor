@@ -46,7 +46,7 @@ export interface InlineSource {
   /** A reason to show for a hunk (the model's), if any. */
   reason(proposalId: string, hunkId: string): string | undefined;
   subscribe(listener: () => void): () => void;
-  /** The note's text in the editor changed (debounced), or the note was opened. */
+  /** The note's text in the editor changed (debounced; every undo and redo step at once), or the note was opened. */
   changed(path: string, text: string): void;
   clicks: InlineClicks;
 }
@@ -149,6 +149,15 @@ export class ReviewController implements EditApplier {
             this.path = path;
             this.settle(0);
           } else if (u.docChanged) {
+            // Each undo and redo step is reported at once, with the text it left, so an accepted change that
+            // Ctrl+Z took out goes back to pending (INVARIANTS.md B6). Typing is reported once it settles.
+            const steps = u.transactions.filter((t) => t.docChanged && (t.isUserEvent('undo') || t.isUserEvent('redo'))).map((t) => t.state.doc.toString());
+            if (path !== null && steps.length > 0) {
+              // Never inside the update: the review may change cards, which redraws the editors.
+              window.setTimeout(() => {
+                for (const text of steps) source.changed(path, text);
+              }, 0);
+            }
             this.settle(SETTLE_MS);
           }
           if (u.transactions.some((t) => t.effects.some((e) => e.is(refresh)))) this.render();

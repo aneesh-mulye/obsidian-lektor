@@ -66,7 +66,12 @@ export class EditHistoryModal extends Modal {
   private entry(parent: HTMLElement, e: LogEntry, isReverted: boolean): void {
     const row = parent.createDiv({ cls: 'lektor-history-entry' });
     const head = row.createDiv({ cls: 'lektor-history-entry-head' });
-    const kind = e.kind === 'create' ? 'Created the note' : e.kind === 'revert' ? 'Reverted a change' : 'Accepted a change';
+    const kind =
+      e.kind === 'create'
+        ? 'Created the note'
+        : e.kind === 'revert'
+          ? e.via === 'undo' ? 'Undone in the note' : 'Reverted a change'
+          : e.via === 'redo' ? 'Redone in the note' : 'Accepted a change';
     head.createSpan({ text: `${new Date(e.at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })} · ${kind}${e.model ? ` · ${e.model.model}` : ''}` });
     const body = row.createDiv({ cls: 'lektor-hunk-text' });
     if (e.kind === 'create') {

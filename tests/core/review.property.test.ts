@@ -5,31 +5,14 @@
 
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import type { Chat } from '../../src/core/chat/types';
-import { EMPTY_CONTEXT } from '../../src/core/context/state';
 import { applyHunks } from '../../src/core/review/hunks';
 import { EditLog } from '../../src/core/review/log';
-import { type ProposalHost, ReviewManager } from '../../src/core/review/manager';
+import { ReviewManager } from '../../src/core/review/manager';
 import { newNotePathProblem, proposeEdit } from '../../src/core/review/proposals';
 import { proposeEditTool, proposeNoteTool } from '../../src/core/review/tools';
 import type { EditApplier, Proposal, Splice } from '../../src/core/review/types';
-import { type Storage, type StorageNamespace, isStorageKey } from '../../src/core/storage';
 import { KnownUrls } from '../../src/core/tools/urls';
-
-const MODEL = { provider: 'ollama', model: 'm' };
-
-class MemStorage implements Storage {
-  readonly files = new Map<string, string>();
-  private k(ns: StorageNamespace, key: string) {
-    if (!isStorageKey(key)) throw new Error(`bad key ${String(key)}`);
-    return `${ns}/${key}`;
-  }
-  read(ns: StorageNamespace, key: string) { return Promise.resolve(this.files.get(this.k(ns, key)) ?? null); }
-  write(ns: StorageNamespace, key: string, data: string) { this.files.set(this.k(ns, key), data); return Promise.resolve(); }
-  append(ns: StorageNamespace, key: string, data: string) { const k = this.k(ns, key); this.files.set(k, (this.files.get(k) ?? '') + data); return Promise.resolve(); }
-  remove(ns: StorageNamespace, key: string) { this.files.delete(this.k(ns, key)); return Promise.resolve(); }
-  list(ns: StorageNamespace) { return Promise.resolve([...this.files.keys()].filter((k) => k.startsWith(`${ns}/`)).map((k) => k.slice(ns.length + 1))); }
-}
+import { Host, MODEL, MemStorage, text, word } from './review.fixtures';
 
 interface Write { kind: 'apply' | 'create' | 'trash'; path: string; before: string; after: string }
 
@@ -62,17 +45,6 @@ class FakeVault implements EditApplier {
   }
 }
 
-class Host implements ProposalHost {
-  chat: Chat = { id: 'chat1', title: '', createdAt: 0, updatedAt: 0, model: MODEL, messages: [], context: EMPTY_CONTEXT, proposals: {} };
-  updateProposal(id: string, fn: (p: Proposal) => Proposal) {
-    const p = this.chat.proposals![id];
-    if (p) this.chat = { ...this.chat, proposals: { ...this.chat.proposals, [id]: fn(p) } };
-  }
-  add(p: Proposal) {
-    this.chat = { ...this.chat, proposals: { ...this.chat.proposals, [p.id]: p } };
-  }
-}
-
 /** True if `after` is `before` with exactly one span `out` replaced by `ins`. */
 function singleSpan(before: string, after: string, out: string, ins: string): boolean {
   if (after.length !== before.length - out.length + ins.length) return false;
@@ -85,9 +57,6 @@ function singleSpan(before: string, after: string, out: string, ins: string): bo
 // ---------------------------------------------------------------------------
 // The edit world
 
-const word = fc.constantFrom('the', 'teh', 'cat', 'sat', 'on', 'mat', 'keeper', 'light', 'its', "it's", 'their', 'there', '1844', 'naïve', '日本');
-const sep = fc.constantFrom(' ', ' ', ', ', '. ', '\n');
-const text = fc.array(fc.tuple(word, sep), { minLength: 3, maxLength: 40 }).map((ws) => ws.map(([w, s]) => w + s).join(''));
 const PATHS = ['a.md', 'Notes/b.md', 'c.md'];
 
 let n = 0;
@@ -308,15 +277,23 @@ describe('review (INVARIANTS.md W3–W5, design invariants 3, 6, 7)', () => {
           const t = w.vault.notes.get(path);
           if (t === undefined) return;
           const before = { ...w.host.chat.proposals };
+          const logged = (await w.log.entries(path)).length;
           w.manager.noteChanged(w.host, path, t);
           for (const [pid, p] of Object.entries(w.host.chat.proposals ?? {})) {
             if (p === before[pid] || p.kind !== 'edit') continue;
-            // B3: an automatic rebase drops nothing.
+            // B3: an automatic rebase drops nothing: every hunk dropped now was dropped before.
             const old = before[pid] as typeof p;
-            expect(p.hunks.filter((h) => h.status === 'dropped').length).toBe(old.hunks.filter((h) => h.status === 'dropped').length);
+            const wasDropped = new Set(old.hunks.filter((h) => h.status === 'dropped').map((h) => h.id));
+            for (const h of p.hunks) if (h.status === 'dropped') expect(wasDropped.has(h.id), `${h.id} dropped by a check`).toBe(true);
             w.expected.set(pid, t);
           }
-          await Promise.resolve();
+          // B6: typing that lands exactly on a text from before an accept undoes it (logged as a revert); one
+          // that lands right after an undone accept redoes it (logged as an accept). Nothing else is logged.
+          await w.manager.settled();
+          for (const e of (await w.log.entries(path)).slice(logged)) {
+            expect(e.via, `${e.kind} logged by a check`).toBeDefined();
+            bump(w, path, e.kind === 'revert' ? 'revert' : 'hunk');
+          }
         }, 'none'),
       ),
       // The user clicks Rebase.

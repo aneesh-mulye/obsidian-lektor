@@ -8,6 +8,8 @@
  *
  * Also keeps staleness current: when a chat opens or gets a new proposal, and
  * when a note with pending proposals changes on disk while no editor has it.
+ * A chat that opens also catches up with undo and redo done while it wasn't
+ * open (INVARIANTS.md B6).
  */
 
 import type { ChatManager } from '../core/chat/manager';
@@ -95,6 +97,7 @@ export function watchStaleness(deps: InlineDeps): { modified: (path: string) => 
     if (text !== null) deps.review.noteChanged(deps.chats.session, path, text);
   };
   const onChat = () => {
+    deps.review.sync(deps.chats.session);
     for (const p of pendingEdits(deps)) {
       if (checked.has(p.id)) continue;
       checked.add(p.id);
@@ -107,7 +110,7 @@ export function watchStaleness(deps: InlineDeps): { modified: (path: string) => 
     modified: (path) => {
       // An open editor reports its own changes (it may be ahead of the disk).
       if (deps.editorText(path) !== null) return;
-      if (pendingEdits(deps).some((p) => p.path === path)) void check(path);
+      if (pendingEdits(deps).some((p) => p.path === path) || deps.review.tracks(path)) void check(path);
     },
     dispose: unsubscribe,
   };
