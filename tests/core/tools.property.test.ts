@@ -13,6 +13,11 @@ import type { SearchProvider } from '../../src/core/tools/search';
 import type { Tool, ToolContext } from '../../src/core/tools/types';
 import { KnownUrls, extractUrls, normaliseUrl } from '../../src/core/tools/urls';
 import { fetchPageTool, webSearchTool } from '../../src/core/tools/web';
+import { PROSE, toolRuns } from '../../src/core/tools/run';
+import type { Chat } from '../../src/core/chat/types';
+import { EMPTY_CONTEXT } from '../../src/core/context/state';
+import type { Capabilities } from '../../src/core/providers/types';
+import { DISPLAY_MODES } from '../../src/core/settings';
 
 const enc = new TextEncoder();
 
@@ -223,5 +228,65 @@ describe('fetch provenance (INVARIANTS.md T3)', () => {
     expect(r.content).toContain('untrusted');
     expect(r.content).toContain('[The page was cut off here.]');
     expect(new TextEncoder().encode(r.content).length).toBeLessThan(3000 + 600);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// INVARIANTS.md B5: Prose mode proposes nothing.
+
+describe('display modes (INVARIANTS.md B5)', () => {
+  const stub = (name: string): Tool => ({
+    name,
+    description: name,
+    schema: z.object({}),
+    approval: 'never',
+    touchesVault: false,
+    run: () => Promise.resolve({ content: '', summary: '' }),
+  });
+  const registry = new ToolRegistry();
+  for (const n of ['web_search', 'fetch_page', 'propose_edit', 'propose_note']) registry.register(stub(n));
+  const fenced = { instructions: 'FENCED', extract: () => Promise.resolve({ proposals: [], problems: [] }) };
+
+  it('B5: a Prose chat is never offered edit tools or fenced instructions, and is told to describe changes', () => {
+    fc.assert(
+      fc.property(
+        fc.option(fc.constantFrom(...DISPLAY_MODES), { nil: undefined }),
+        fc.constantFrom(...DISPLAY_MODES),
+        fc.constantFrom<Capabilities['toolCalling'][]>('native', 'mcp', 'fenced', 'none'),
+        fc.array(fc.constantFrom('a.md', 'b.md'), { maxLength: 2 }),
+        fc.boolean(),
+        fc.subarray(['web_search', 'fetch_page']),
+        (mode, fallback, toolCalling, editable, toolsDisabled, web) => {
+          const runs = toolRuns(registry, {
+            webNames: () => web,
+            reviewNames: () => ['propose_edit', 'propose_note'],
+            displayMode: () => fallback,
+            limits: () => ({ searches: 3, fetches: 3 }),
+            fenced: () => fenced,
+          });
+          const chat: Chat = {
+            id: 'c', title: '', createdAt: 0, updatedAt: 0, model: null, messages: [], context: EMPTY_CONTEXT,
+            ...(mode ? { displayMode: mode } : {}),
+            ...(toolsDisabled ? { toolsDisabled } : {}),
+          };
+          const run = runs.forReply({ chat, capabilities: { toolCalling, nativeWebSearch: false, images: false, contextWindow: 8192 }, contextUrls: [], editable });
+          const names = (run?.definitions ?? []).map((d) => d.name);
+          if ((mode ?? fallback) === 'prose') {
+            expect(names).not.toContain('propose_edit');
+            expect(names).not.toContain('propose_note');
+            expect(run?.fenced).toBeUndefined();
+            expect(run?.instructions).toBe(PROSE);
+          } else {
+            expect(run?.instructions).toBeUndefined();
+            if (toolCalling === 'native') {
+              expect(names.includes('propose_edit')).toBe(editable.length > 0);
+              expect(names).toContain('propose_note');
+            } else {
+              expect(run?.fenced !== undefined).toBe(editable.length > 0);
+            }
+          }
+        },
+      ),
+    );
   });
 });

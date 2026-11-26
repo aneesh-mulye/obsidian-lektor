@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { type Chip, EMPTY_CONTEXT } from '../context/state';
 import type { ModelRef } from '../providers/types';
-import { ModelRefSchema } from '../settings';
+import { DISPLAY_MODES, ModelRefSchema } from '../settings';
 import type { Storage } from '../storage';
 import type { Chat } from './types';
 
@@ -77,6 +77,7 @@ const Proposal = z.discriminatedUnion('kind', [
     edits: z.array(z.strictObject({ find: z.string(), replace: z.string(), reason: z.string().optional() })),
     anchors: z.array(z.number()),
     expect: z.string(),
+    settled: z.array(z.string()).optional(),
     hunks: z.array(
       z.strictObject({
         id: z.string(),
@@ -84,7 +85,8 @@ const Proposal = z.discriminatedUnion('kind', [
         start: z.number(),
         end: z.number(),
         after: z.string(),
-        status: z.enum(['pending', 'accepted', 'rejected']),
+        status: z.enum(['pending', 'accepted', 'rejected', 'dropped']),
+        dropReason: z.string().optional(),
       }),
     ),
     createdAt: z.number(),
@@ -139,6 +141,7 @@ const ChatV2 = ChatV1.extend({
   sentContext: z.record(z.string(), z.string()).optional(),
   toolsDisabled: z.boolean().optional(),
   proposals: z.record(z.string(), Proposal).optional(),
+  displayMode: z.enum(DISPLAY_MODES).optional(),
 });
 
 const FileSchema = z.discriminatedUnion('version', [

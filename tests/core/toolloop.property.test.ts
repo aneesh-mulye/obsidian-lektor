@@ -9,6 +9,9 @@ import { MAX_TOOL_ROUNDS, ChatSession } from '../../src/core/chat/session';
 import type { Chat, ToolsDeps } from '../../src/core/chat/types';
 import { EMPTY_CONTEXT } from '../../src/core/context/state';
 import type { Capabilities, ChatEvent, ChatMessage, ChatProvider, ChatRequest } from '../../src/core/providers/types';
+import { z } from 'zod';
+import { ToolRegistry } from '../../src/core/tools/registry';
+import { PROSE, toolRuns } from '../../src/core/tools/run';
 
 class Channel {
   readonly queue: Array<ChatEvent | 'end'> = [];
@@ -317,5 +320,34 @@ describe('tool loop (INVARIANTS.md C7)', () => {
     expect(real.provider.requests).toHaveLength(MAX_TOOL_ROUNDS);
     expect(real.provider.requests.map((q) => q.tools)).toEqual([...Array<boolean>(MAX_TOOL_ROUNDS - 1).fill(true), false]);
     expect(real.session.busy).toBe(false);
+  });
+
+  it('B5: a chat switched to Prose sends the Prose instruction and offers no tools that propose; the mode is saved with the chat', async () => {
+    const provider = new FakeProvider('native');
+    const saved: Chat[] = [];
+    let n = 0;
+    const chat: Chat = { id: 'c', title: '', createdAt: 0, updatedAt: 0, model: { provider: 'fake', model: 'm' }, messages: [], context: EMPTY_CONTEXT, displayMode: 'inline' };
+    const registry = new ToolRegistry();
+    for (const name of ['propose_edit', 'propose_note']) {
+      registry.register({ name, description: name, schema: z.object({}), approval: 'never', touchesVault: false, run: () => Promise.resolve({ content: '', summary: '' }) });
+    }
+    const session = new ChatSession(chat, {
+      providers: { get: () => provider },
+      clock: { now: () => ++n },
+      newId: () => `id${++n}`,
+      save: (c) => {
+        saved.push(c);
+        return Promise.resolve();
+      },
+      tools: toolRuns(registry, { webNames: () => [], reviewNames: () => ['propose_edit', 'propose_note'], displayMode: () => 'sidebar', limits: () => ({ searches: 1, fetches: 1 }) }),
+    });
+    session.setDisplayMode('prose');
+    session.send('Any fixes?');
+    await settle();
+    provider.channels[0]!.push({ type: 'done', reason: 'stop' });
+    await settle();
+    expect(provider.requests[0]!.tools).toBe(false);
+    expect(provider.requests[0]!.messages.filter((m) => m.role === 'system').map((m) => m.content)).toEqual([PROSE]);
+    expect(saved.at(-1)?.displayMode).toBe('prose');
   });
 });

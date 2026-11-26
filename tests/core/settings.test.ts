@@ -11,7 +11,7 @@ describe('SettingsStore', () => {
     expect(DEFAULT_SETTINGS).toEqual({
       version: 4,
       models: { ollama: { baseUrl: 'http://127.0.0.1:11434', contextLength: 32768 }, defaultModel: null },
-      review: { defaultDisplayMode: 'sidebar' },
+      review: { defaultDisplayMode: 'inline' },
       context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3, respectObsidianExclusions: true },
       tools: {
         searchesPerMessage: 5,
@@ -40,9 +40,9 @@ describe('SettingsStore', () => {
 
   it('applies a valid patch and rejects an invalid one whole', () => {
     const store = SettingsStore.load(null);
-    expect(store.update({ tools: { searchesPerMessage: 3 }, review: { defaultDisplayMode: 'inline' } })).toEqual({ ok: true });
+    expect(store.update({ tools: { searchesPerMessage: 3 }, review: { defaultDisplayMode: 'sidebar' } })).toEqual({ ok: true });
     expect(store.settings.tools.searchesPerMessage).toBe(3);
-    expect(store.settings.review.defaultDisplayMode).toBe('inline');
+    expect(store.settings.review.defaultDisplayMode).toBe('sidebar');
 
     const bad = store.update({ tools: { searchesPerMessage: 2, fetchesPerMessage: 51 } });
     expect(bad.ok).toBe(false);

@@ -220,6 +220,7 @@ describe('review (INVARIANTS.md W3–W5, design invariants 3, 6, 7)', () => {
           if (p?.kind !== 'edit') return;
           const h = p.hunks[hi % p.hunks.length]!;
           const before = w.vault.writes.length;
+          const textBefore = w.vault.notes.get(p.path);
           const outcome = await w.manager.acceptHunk(w.host, p.id, h.id);
           const after = (w.host.chat.proposals![p.id] as typeof p).hunks.find((x) => x.id === h.id)!;
           if (outcome === 'applied') {
@@ -229,7 +230,7 @@ describe('review (INVARIANTS.md W3–W5, design invariants 3, 6, 7)', () => {
             expect(singleSpan(write.before, write.after, p.edits[h.edit]!.find.slice(h.start, h.end), h.after)).toBe(true);
             expect(after.status).toBe('accepted');
             // W3: and at the right place. If anything else changed the note, the passage had to be unambiguous.
-            if (write.before !== w.expected.get(p.id)) {
+            if (textBefore !== w.expected.get(p.id)) {
               const own = p.hunks.filter((k) => k.edit === h.edit);
               const region = applyHunks(p.edits[h.edit]!.find, own, own.flatMap((k, i) => (k.status === 'accepted' ? [i] : [])));
               expect(count(write.before, region)).toBe(1);
@@ -300,6 +301,40 @@ describe('review (INVARIANTS.md W3–W5, design invariants 3, 6, 7)', () => {
           await Promise.resolve();
         }, 'none'),
       ),
+      // The note is checked (as on every edit): Lektor may rebase by itself, only losslessly.
+      fc.nat().map((pi) =>
+        cmd(`check(${pi})`, async (w) => {
+          const path = PATHS[pi % PATHS.length]!;
+          const t = w.vault.notes.get(path);
+          if (t === undefined) return;
+          const before = { ...w.host.chat.proposals };
+          w.manager.noteChanged(w.host, path, t);
+          for (const [pid, p] of Object.entries(w.host.chat.proposals ?? {})) {
+            if (p === before[pid] || p.kind !== 'edit') continue;
+            // B3: an automatic rebase drops nothing.
+            const old = before[pid] as typeof p;
+            expect(p.hunks.filter((h) => h.status === 'dropped').length).toBe(old.hunks.filter((h) => h.status === 'dropped').length);
+            w.expected.set(pid, t);
+          }
+          await Promise.resolve();
+        }, 'none'),
+      ),
+      // The user clicks Rebase.
+      fc.nat().map((pi) =>
+        cmd(`rebase(${pi})`, async (w) => {
+          const ps = proposals(w).filter((p) => p.kind === 'edit');
+          const p = ps[pi % Math.max(1, ps.length)];
+          if (p?.kind !== 'edit') return;
+          const r = await w.manager.rebaseNow(w.host, p.id);
+          if (r && w.vault.notes.has(p.path)) w.expected.set(p.id, w.vault.notes.get(p.path)!);
+          // B1: dropped hunks can never be applied.
+          for (const d of r?.dropped ?? []) {
+            const writes = w.vault.writes.length;
+            expect(await w.manager.acceptHunk(w.host, p.id, d.hunkId)).toBe('done');
+            expect(w.vault.writes.length).toBe(writes);
+          }
+        }, 'none'),
+      ),
       fc.tuple(fc.nat(), fc.nat()).map(([pi, ei]) =>
         cmd(`revert(${pi}, ${ei})`, async (w) => {
           const path = PATHS[pi % PATHS.length]!;
@@ -351,6 +386,8 @@ describe('review (INVARIANTS.md W3–W5, design invariants 3, 6, 7)', () => {
           w.vault.notes.set(to, t);
           const before = await w.log.entries(from);
           await w.log.renamed(from, to);
+          w.manager.renamed(w.host, from, to);
+          for (const p of proposals(w)) expect(p.path).not.toBe(from); // proposals follow the note
           // W5: history follows the note.
           expect(await w.log.entries(to)).toEqual(before);
           if (w.logged.has(from)) {

@@ -11,6 +11,7 @@ import type { Chat, Clock } from '../chat/types';
 import type { EditLog, LogEntry } from './log';
 import { fingerprint } from './fingerprint';
 import { editTextNow, locateHunk } from './proposals';
+import { type RebaseResult, rebase, staleness } from './rebase';
 import type { EditApplier, EditProposal, NoteProposal, Proposal, Splice } from './types';
 
 /** Where a proposal lives: the chat session that made it. */
@@ -29,6 +30,13 @@ export class ReviewManager {
   #queue: Promise<unknown> = Promise.resolve();
   /** Why a hunk or note card could not be applied, until it is tried again (shown on the card). */
   readonly problems = new Map<string, string>();
+  /** Stale pending hunks, by proposal, that an automatic rebase could not keep (the amber dot). */
+  readonly stale = new Map<string, readonly string[]>();
+  /**
+   * The text each note had when the review last saw it, so a rebase can carry positions through
+   * the user's change exactly. In memory only; never stored.
+   */
+  readonly #seen = new Map<string, string>();
   readonly #listeners = new Set<() => void>();
   #version = 0;
 
@@ -38,6 +46,8 @@ export class ReviewManager {
       log: EditLog;
       /** The note's current text (through ContextBroker). */
       readNote: (path: string) => Promise<string>;
+      /** The note's text in an open editor, if any (it may be ahead of the disk). */
+      editorText?: (path: string) => string | null;
       clock: Clock;
     },
   ) {}
@@ -78,7 +88,11 @@ export class ReviewManager {
         if (splice) {
           context = { before: text.slice(Math.max(0, splice.from - CONTEXT), splice.from), after: text.slice(splice.to, splice.to + CONTEXT) };
           // Only if the note was as this review left it does it stay "as expected" afterwards.
-          if (fingerprint(text) === p.expect) expect = fingerprint(text.slice(0, splice.from) + splice.insert + text.slice(splice.to));
+          if (fingerprint(text) === p.expect) {
+            const next = text.slice(0, splice.from) + splice.insert + text.slice(splice.to);
+            expect = fingerprint(next);
+            this.#seen.set(p.path, next);
+          }
         }
         return splice;
       });
@@ -133,6 +147,88 @@ export class ReviewManager {
   rejectAll(host: ProposalHost, proposalId: string): void {
     host.updateProposal(proposalId, (q) => (q.kind !== 'edit' ? q : { ...q, hunks: q.hunks.map((h) => (h.status === 'pending' ? { ...h, status: 'rejected' } : h)) }));
     this.changed();
+  }
+
+  /**
+   * A note's text changed (typing in the editor, or on disk). Check the proposals for it in this
+   * chat: rebase by itself only when nothing would be dropped (INVARIANTS.md B3); otherwise
+   * leave the proposal as it is and report its stale hunks.
+   */
+  noteChanged(host: ProposalHost, path: string, text: string): void {
+    const previous = this.#seen.get(path);
+    this.#seen.set(path, text);
+    let changed = false;
+    for (const p of Object.values(host.chat.proposals ?? {})) {
+      if (p.kind !== 'edit' || p.path !== path || !p.hunks.some((h) => h.status === 'pending')) continue;
+      if (fingerprint(text) === p.expect) {
+        if (this.stale.delete(p.id)) changed = true;
+        continue;
+      }
+      const { stale } = staleness(text, p);
+      const result = rebase(text, p, previous);
+      if (result.dropped.length === 0) {
+        host.updateProposal(p.id, () => result.proposal);
+        this.stale.delete(p.id);
+      } else {
+        this.stale.set(p.id, stale);
+      }
+      changed = true;
+    }
+    if (changed) this.changed();
+  }
+
+  /** A note or folder was renamed: the open chat's proposals for it follow it. */
+  renamed(host: ProposalHost, from: string, to: string): void {
+    const moved = (path: string) => (path === from ? to : path.startsWith(`${from}/`) ? to + path.slice(from.length) : null);
+    for (const [path, text] of [...this.#seen]) {
+      const m = moved(path);
+      if (m === null) continue;
+      this.#seen.delete(path);
+      this.#seen.set(m, text);
+    }
+    let changed = false;
+    for (const p of Object.values(host.chat.proposals ?? {})) {
+      const m = moved(p.path);
+      if (m === null) continue;
+      host.updateProposal(p.id, (q) => ({ ...q, path: m }));
+      changed = true;
+    }
+    if (changed) this.changed();
+  }
+
+  /** Rebase now (a click on Rebase): keep what can be re-anchored, drop the rest, and say why. */
+  rebaseNow(host: ProposalHost, proposalId: string): Promise<RebaseResult | null> {
+    return this.serial(async () => {
+      const p = this.edit(host, proposalId);
+      if (!p) return null;
+      let text = this.deps.editorText?.(p.path) ?? null;
+      if (text === null) {
+        try {
+          text = await this.deps.readNote(p.path);
+        } catch {
+          const dropped = p.hunks.filter((h) => h.status === 'pending').map((h) => ({ hunkId: h.id, reason: 'the note no longer exists' }));
+          const reasons = new Map(dropped.map((d) => [d.hunkId, d.reason]));
+          const proposal: EditProposal = { ...p, hunks: p.hunks.map((h) => (reasons.has(h.id) ? { ...h, status: 'dropped', dropReason: reasons.get(h.id)! } : h)) };
+          host.updateProposal(proposalId, () => proposal);
+          this.stale.delete(proposalId);
+          this.changed();
+          return { proposal, kept: [], dropped };
+        }
+      }
+      const result = rebase(text, p, this.#seen.get(p.path));
+      this.#seen.set(p.path, text);
+      host.updateProposal(proposalId, () => result.proposal);
+      this.stale.delete(proposalId);
+      for (const d of result.dropped) this.problems.delete(d.hunkId);
+      this.changed();
+      return result;
+    });
+  }
+
+  /** Discard a proposal's remaining hunks (a click on Discard). Never writes. */
+  discard(host: ProposalHost, proposalId: string): void {
+    this.stale.delete(proposalId);
+    this.rejectAll(host, proposalId);
   }
 
   /** Create a proposed note (a click on Create). */

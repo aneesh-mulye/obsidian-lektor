@@ -1,34 +1,79 @@
 // SPDX-FileCopyrightText: 2026 Aneesh Mulye
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-/** Review cards in the conversation: per-hunk ✓ / ✕ for edits, Create / Dismiss for new notes (DESIGN.md § Display modes). */
+/**
+ * Review cards in the conversation (DESIGN.md § Display modes; § Staleness and rebase):
+ * per-hunk ✓ / ✕ for edits, Create / Dismiss for new notes. In Inline mode the card is a
+ * summary (the marks are in the editor) with the changes folded away. Each edit card has
+ * a staleness dot; when amber, it opens the rebase panel.
+ */
 
-import { useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChatSession } from '../../core/chat/session';
 import { hunkView, type ReviewManager } from '../../core/review/manager';
+import type { RebaseResult } from '../../core/review/rebase';
 import type { EditProposal, NoteProposal, Proposal } from '../../core/review/types';
+import type { DisplayMode } from '../../core/settings';
 import { IconButton } from './Icon';
 
 export interface ReviewUi {
   manager: ReviewManager;
   openNote: (path: string) => void;
+  /** The display mode for chats that never chose one. */
+  defaultMode: () => DisplayMode;
 }
 
 const titleOf = (p: string) => p.slice(p.lastIndexOf('/') + 1).replace(/\.md$/i, '');
 
-export function ProposalCard({ proposal, session, ui }: { proposal: Proposal | undefined; session: ChatSession; ui: ReviewUi }) {
+// Which card's rebase panel to open (from the editor pill's amber dot).
+let focused: { id: string; at: number } | null = null;
+const focusListeners = new Set<() => void>();
+export function focusProposal(id: string): void {
+  focused = { id, at: Date.now() };
+  for (const l of focusListeners) l();
+}
+const subscribeFocus = (l: () => void) => {
+  focusListeners.add(l);
+  return () => focusListeners.delete(l);
+};
+const getFocus = () => focused;
+
+export function ProposalCard({ proposal, session, ui, mode }: { proposal: Proposal | undefined; session: ChatSession; ui: ReviewUi; mode: DisplayMode }) {
   useSyncExternalStore(ui.manager.subscribe, ui.manager.version);
   if (!proposal) return null;
-  return proposal.kind === 'edit' ? <EditCard p={proposal} session={session} ui={ui} /> : <NoteCard p={proposal} session={session} ui={ui} />;
+  return proposal.kind === 'edit' ? <EditCard p={proposal} session={session} ui={ui} mode={mode} /> : <NoteCard p={proposal} session={session} ui={ui} />;
 }
 
-function EditCard({ p, session, ui }: { p: EditProposal; session: ChatSession; ui: ReviewUi }) {
+function EditCard({ p, session, ui, mode }: { p: EditProposal; session: ChatSession; ui: ReviewUi; mode: DisplayMode }) {
   const pending = p.hunks.filter((h) => h.status === 'pending').length;
   const accepted = p.hunks.filter((h) => h.status === 'accepted').length;
-  const shownReason = new Set<number>();
+  const stale = ui.manager.stale.get(p.id) ?? [];
+  const [panel, setPanel] = useState(false);
+  const [result, setResult] = useState<RebaseResult | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const focus = useSyncExternalStore(subscribeFocus, getFocus);
+  useEffect(() => {
+    if (focus?.id !== p.id) return;
+    setPanel(true);
+    ref.current?.scrollIntoView({ block: 'nearest' });
+  }, [focus, p.id]);
+
+  const inline = mode === 'inline';
+  const changes = <Hunks p={p} session={session} ui={ui} />;
   return (
-    <div className="lektor-proposal">
+    <div className={`lektor-proposal${inline ? ' is-inline' : ''}`} ref={ref}>
       <div className="lektor-proposal-head">
+        {pending > 0 && (
+          <button
+            type="button"
+            className={`lektor-dot clickable-icon${stale.length > 0 ? ' is-stale' : ''}`}
+            aria-label={
+              stale.length > 0 ? `${stale.length} change${stale.length === 1 ? '' : 's'} no longer fit the note. Click to review.` : 'All proposed changes still fit the note'
+            }
+            data-tooltip-position="top"
+            onClick={() => stale.length > 0 && setPanel(!panel)}
+          />
+        )}
         <button type="button" className="lektor-link" onClick={() => ui.openNote(p.path)} aria-label={`Open ${p.path}`} data-tooltip-position="top">
           {titleOf(p.path)}
         </button>
@@ -44,13 +89,99 @@ function EditCard({ p, session, ui }: { p: EditProposal; session: ChatSession; u
           </span>
         )}
       </div>
+      {(panel || result) && (
+        <RebasePanel
+          p={p}
+          stale={stale.length}
+          result={result}
+          onRebase={() => void ui.manager.rebaseNow(session, p.id).then(setResult)}
+          onKeep={() => {
+            setPanel(false);
+            setResult(null);
+          }}
+          onDiscard={() => {
+            ui.manager.discard(session, p.id);
+            setPanel(false);
+            setResult(null);
+          }}
+        />
+      )}
+      {inline ? (
+        <details className="lektor-proposal-details">
+          <summary>{pending > 0 ? 'Marked in the note. Show the changes here' : 'Show the changes'}</summary>
+          {changes}
+        </details>
+      ) : (
+        changes
+      )}
+    </div>
+  );
+}
+
+function RebasePanel(props: { p: EditProposal; stale: number; result: RebaseResult | null; onRebase: () => void; onKeep: () => void; onDiscard: () => void }) {
+  const { p, stale, result } = props;
+  if (result) {
+    return (
+      <div className="lektor-rebase-panel">
+        <div>
+          {result.kept.length > 0 ? `Rebased: ${result.kept.length} change${result.kept.length === 1 ? '' : 's'} kept.` : 'No changes could be kept.'}
+          {result.dropped.length > 0 && ` ${result.dropped.length} dropped:`}
+        </div>
+        {result.dropped.length > 0 && (
+          <ul className="lektor-rebase-dropped">
+            {result.dropped.map((d) => {
+              const v = hunkView(p, d.hunkId);
+              return (
+                <li key={d.hunkId}>
+                  {v && v.before !== '' && <del>{v.before}</del>}
+                  {v && v.after !== '' && <ins>{v.after}</ins>}
+                  <span className="lektor-rebase-reason">: {d.reason}</span>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <div className="lektor-proposal-all">
+          <button type="button" onClick={props.onKeep}>
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="lektor-rebase-panel">
+      <div>
+        The note has changed, and {stale} change{stale === 1 ? '' : 's'} no longer fit{stale === 1 ? 's' : ''} it. Rebase re-places what still matches and lists what it drops.
+      </div>
+      <div className="lektor-proposal-all">
+        <button type="button" className="mod-cta" onClick={props.onRebase}>
+          Rebase
+        </button>
+        <button type="button" onClick={props.onKeep}>
+          Keep as-is
+        </button>
+        <button type="button" onClick={props.onDiscard}>
+          Discard
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Hunks({ p, session, ui }: { p: EditProposal; session: ChatSession; ui: ReviewUi }) {
+  const shownReason = new Set<number>();
+  const stale = new Set(ui.manager.stale.get(p.id) ?? []);
+  return (
+    <>
       {p.hunks.map((h) => {
         const v = hunkView(p, h.id)!;
         const reason = !shownReason.has(h.edit) ? p.edits[h.edit]!.reason : undefined;
         shownReason.add(h.edit);
-        const problem = ui.manager.problems.get(h.id);
+        const problem = h.status === 'dropped' ? `Dropped: ${h.dropReason ?? 'it no longer fits the note'}.` : ui.manager.problems.get(h.id);
+        const isStale = h.status === 'pending' && stale.has(h.id);
         return (
-          <div key={h.id} className={`lektor-hunk is-${h.status}${problem ? ' is-conflict' : ''}`}>
+          <div key={h.id} className={`lektor-hunk is-${h.status}${problem || isStale ? ' is-conflict' : ''}`}>
             {reason && <div className="lektor-hunk-reason">{reason}</div>}
             <div className="lektor-hunk-body">
               <span className="lektor-hunk-text">
@@ -65,14 +196,15 @@ function EditCard({ p, session, ui }: { p: EditProposal; session: ChatSession; u
                   <IconButton icon="x" label="Reject this change" onClick={() => ui.manager.rejectHunk(session, p.id, h.id)} />
                 </span>
               ) : (
-                <span className="lektor-hunk-status">{h.status === 'accepted' ? 'Accepted' : 'Rejected'}</span>
+                <span className="lektor-hunk-status">{h.status === 'accepted' ? 'Accepted' : h.status === 'rejected' ? 'Rejected' : 'Dropped'}</span>
               )}
             </div>
-            {problem && h.status === 'pending' && <div className="lektor-hunk-problem">{problem}</div>}
+            {problem && h.status !== 'accepted' && h.status !== 'rejected' && <div className="lektor-hunk-problem">{problem}</div>}
+            {!problem && isStale && <div className="lektor-hunk-problem">The note changed here; this no longer fits.</div>}
           </div>
         );
       })}
-    </div>
+    </>
   );
 }
 

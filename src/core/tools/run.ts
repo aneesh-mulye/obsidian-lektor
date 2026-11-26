@@ -3,7 +3,8 @@
 
 /** Builds each reply's tool run: which tools, one budget per message, and the URLs fetch_page may use freely. */
 
-import type { ToolRun, ToolsDeps } from '../chat/types';
+import { type ToolRun, type ToolsDeps, displayModeOf } from '../chat/types';
+import type { DisplayMode } from '../settings';
 import type { ModelRef } from '../providers/types';
 import { ToolBudget } from './budget';
 import type { ToolRegistry } from './registry';
@@ -12,20 +13,35 @@ import { KnownUrls } from './urls';
 export interface ToolRunOptions {
   /** Web tools enabled right now (e.g. web_search only once a provider is set up); the chat's globe can turn them off. */
   webNames: () => string[];
-  /** Review tools (propose_edit needs an editable note in context; propose_note does not). */
+  /** Review tools (propose_edit needs an editable note in context; propose_note does not). None in Prose mode. */
   reviewNames: () => string[];
+  /** The display mode for chats that never chose one (Settings → Review). */
+  displayMode: () => DisplayMode;
   limits: () => { searches: number; fetches: number };
   /** For models without tool calling: the fenced-block fallback for proposing edits. */
   fenced?: (editable: ReadonlySet<string>, model: ModelRef | null) => NonNullable<ToolRun['fenced']>;
 }
 
+export const PROSE =
+  'The user is reviewing in Prose mode: if you suggest changes to their notes, describe them in words (quote the passage and say what to change). Do not write out a rewritten note; the user will make the changes by hand.';
+
+const PROSE_ONLY: ToolRun = {
+  definitions: [],
+  execute: () => Promise.resolve({ ok: false, content: 'Tools are not available.', summary: 'no tools' }),
+  instructions: PROSE,
+};
+
 export function toolRuns(registry: ToolRegistry, options: ToolRunOptions): ToolsDeps {
   return {
     forReply({ chat, capabilities, contextUrls, editable }): ToolRun | null {
       const editableSet = new Set(editable);
+      // Prose mode: nothing is proposed, the model is asked to describe changes (INVARIANTS.md B5).
+      const prose = displayModeOf(chat, options.displayMode()) === 'prose';
+      const reviewNames = prose ? [] : options.reviewNames();
       if (capabilities.toolCalling !== 'native') {
+        if (prose) return PROSE_ONLY;
         // No tool calling: edits can still be proposed in fenced blocks.
-        if (!options.fenced || editableSet.size === 0 || !options.reviewNames().includes('propose_edit')) return null;
+        if (!options.fenced || editableSet.size === 0 || !reviewNames.includes('propose_edit')) return null;
         return {
           definitions: [],
           execute: () => Promise.resolve({ ok: false, content: 'Tools are not available.', summary: 'no tools' }),
@@ -34,9 +50,9 @@ export function toolRuns(registry: ToolRegistry, options: ToolRunOptions): Tools
       }
       const names = [
         ...(chat.toolsDisabled ? [] : options.webNames()),
-        ...options.reviewNames().filter((n) => n !== 'propose_edit' || editableSet.size > 0),
+        ...reviewNames.filter((n) => n !== 'propose_edit' || editableSet.size > 0),
       ];
-      if (names.length === 0) return null;
+      if (names.length === 0) return prose ? PROSE_ONLY : null;
       const enabled = new Set(names);
       const budget = new ToolBudget(options.limits());
       const known = new KnownUrls();
@@ -46,6 +62,7 @@ export function toolRuns(registry: ToolRegistry, options: ToolRunOptions): Tools
       }
       for (const u of contextUrls) known.add(u);
       return {
+        ...(prose ? { instructions: PROSE } : {}),
         definitions: registry.definitions(names),
         async execute(call, signal, approve) {
           const result = await registry.execute(call, enabled, budget, { signal, knownUrls: known, approve, editable: editableSet, model: chat.model });

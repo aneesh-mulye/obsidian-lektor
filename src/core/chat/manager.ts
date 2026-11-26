@@ -7,6 +7,7 @@ import { prepareContext } from '../context/prepare';
 import { EMPTY_CONTEXT } from '../context/state';
 import { type ContextDeps, ContextController } from './ContextController';
 import type { ModelRef } from '../providers/types';
+import type { DisplayMode } from '../settings';
 import type { ChatHistory, ChatSummary } from './history';
 import { ChatSession } from './session';
 import type { Chat, Clock, ProviderLookup, ToolsDeps } from './types';
@@ -25,6 +26,8 @@ export interface ManagerDeps {
   storeFullTranscripts?: () => boolean;
   /** Tools for each reply. */
   tools?: ToolsDeps;
+  /** The display mode new chats start in (Settings → Review). */
+  defaultDisplayMode?: () => DisplayMode;
 }
 
 export interface ChatSnapshot {
@@ -108,7 +111,17 @@ export class ChatManager {
 
   #blank(): Chat {
     const now = this.deps.clock.now();
-    return { id: this.deps.newId(), title: '', createdAt: now, updatedAt: now, model: this.deps.defaultModel(), messages: [], context: EMPTY_CONTEXT };
+    const mode = this.deps.defaultDisplayMode?.();
+    return {
+      id: this.deps.newId(),
+      title: '',
+      createdAt: now,
+      updatedAt: now,
+      model: this.deps.defaultModel(),
+      messages: [],
+      context: EMPTY_CONTEXT,
+      ...(mode ? { displayMode: mode } : {}),
+    };
   }
 
   #attach(chat: Chat): ChatSession {

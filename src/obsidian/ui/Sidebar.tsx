@@ -7,7 +7,8 @@ import { Menu } from 'obsidian';
 import { type ChangeEvent, type KeyboardEvent, type MouseEvent, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChatSummary } from '../../core/chat/history';
 import type { ChatManager } from '../../core/chat/manager';
-import type { AssistantMessage, Chat, ToolRound } from '../../core/chat/types';
+import { type AssistantMessage, type Chat, type ToolRound, displayModeOf } from '../../core/chat/types';
+import type { DisplayMode } from '../../core/settings';
 import type { Capabilities, ChatProvider } from '../../core/providers/types';
 import { normaliseUrl } from '../../core/tools/urls';
 import type { ModelRef } from '../../core/providers/types';
@@ -75,6 +76,7 @@ export function Sidebar({ manager, providers, clearAllChats, context, searchConf
         caps={caps}
         searchConfigured={searchConfigured?.() ?? false}
         historyOpen={historyOpen}
+        mode={review ? displayModeOf(chat, review.defaultMode()) : null}
         onNewChat={() => {
           manager.newChat();
           setHistoryOpen(false);
@@ -112,6 +114,12 @@ function errorText(err: unknown): string {
   return err instanceof Error && err.message ? err.message : 'not reachable';
 }
 
+const MODES: Record<DisplayMode, { title: string; icon: string }> = {
+  prose: { title: 'Prose: the model describes changes in words', icon: 'pilcrow' },
+  sidebar: { title: 'Sidebar diff: review changes here', icon: 'git-compare' },
+  inline: { title: 'Inline: review changes in the note', icon: 'highlighter' },
+};
+
 function toolsState(on: boolean, caps: Capabilities | null, searchConfigured: boolean): { label: string; warn: boolean } {
   const next = ' Changes apply from your next message.';
   if (!on) return { label: `Tools off: no web search or page fetching.${next}`, warn: false };
@@ -127,10 +135,26 @@ function Header(props: {
   caps: Capabilities | null;
   searchConfigured: boolean;
   historyOpen: boolean;
+  /** The chat's display mode; null without review. */
+  mode: DisplayMode | null;
   onNewChat: () => void;
   onToggleHistory: () => void;
 }) {
   const { chat, manager, providers } = props;
+  const pickMode = (ev: MouseEvent<HTMLButtonElement>) => {
+    const rect = ev.currentTarget.getBoundingClientRect();
+    const menu = new Menu();
+    for (const m of ['prose', 'sidebar', 'inline'] as const) {
+      menu.addItem((i) =>
+        i
+          .setTitle(MODES[m].title)
+          .setIcon(MODES[m].icon)
+          .setChecked(props.mode === m)
+          .onClick(() => manager.session.setDisplayMode(m)),
+      );
+    }
+    menu.showAtPosition({ x: rect.left, y: rect.bottom });
+  };
   const [loading, setLoading] = useState(false);
 
   const openPicker = async (ev: MouseEvent<HTMLButtonElement>) => {
@@ -172,6 +196,7 @@ function Header(props: {
         <Icon name="chevron-down" />
       </button>
       <div className="lektor-header-actions">
+        {props.mode && <IconButton icon={MODES[props.mode].icon} label={`${MODES[props.mode].title}. Click to change.`} onClick={pickMode} />}
         {(() => {
           const on = chat.toolsDisabled !== true;
           const state = toolsState(on, props.caps, props.searchConfigured);
@@ -204,7 +229,8 @@ function Conversation(props: {
   onApprove: (id: string, ok: boolean) => void;
 }) {
   const { chat, busy, session, review, onRegenerate, onApprove } = props;
-  const card = (id: string) => (review ? <ProposalCard key={id} proposal={chat.proposals?.[id]} session={session} ui={review} /> : null);
+  const mode = review ? displayModeOf(chat, review.defaultMode()) : 'sidebar';
+  const card = (id: string) => (review ? <ProposalCard key={id} proposal={chat.proposals?.[id]} session={session} ui={review} mode={mode} /> : null);
   const ref = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 

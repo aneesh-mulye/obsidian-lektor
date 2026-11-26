@@ -258,7 +258,8 @@ In Prose mode the model is told not to call `propose_edit`.
 **Staleness and rebase.** Each pending proposal stores the note's content hash and each hunk's anchor (text before and after). On every editor change the plugin re-checks anchors:
 
 - All hunks still apply cleanly → the proposal's status dot stays neutral.
-- Some hunks conflict → the dot turns amber. Clicking it opens a small panel: **Rebase** (re-anchor what still matches; a list shows which hunks were dropped and why), **Keep as-is** (leave it stale; accepting a stale hunk is blocked), or **Discard**.
+- Some hunks no longer fit, but every one can be re-anchored on its own surrounding text → Lektor rebases silently; nothing is lost.
+- Some hunk would be dropped → the dot turns amber. Clicking it opens a small panel: **Rebase** (re-anchor what still matches; a list shows which hunks were dropped and why), **Keep as-is** (leave it stale; accepting a stale hunk is blocked), or **Discard**.
 
 **AI undo history.** Every accepted hunk is logged permanently, per note, in plugin data (before text, after text, time, chat, model). The log is append-only, follows note renames, and is cleared only by an explicit "Clear history" for one note or for all. A history popover per note lets you revert any accepted hunk, which itself checks for conflicts the same way. Obsidian's normal undo still works independently.
 
@@ -419,6 +420,14 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
 - *(2026-11-26, before milestone 4)* `fetch_page` approval follows URL provenance (see Tools framework): known URLs run freely, others need an approval card.
 - *(2026-11-26)* Replies and the model's thinking are chat text and are kept in history, where they may quote notes; the privacy settings say so, and when a note is deleted Lektor offers to delete the chats that sent it (found through their context manifests).
 - *(2026-11-26, before milestone 5)* Hunks are phrases within each edit (see Edits and diff review); selection sources are editable; `propose_note` ships with milestone 5 (created only on a click; path new, Markdown, not excluded; reverting moves it to the trash, only if unchanged since); when a note is deleted, the same notice that offers to delete chats also offers to clear its AI edit history.
+- *(2026-11-26, before milestone 6)* Inline marks show proposals from the chat open in the sidebar only. Rebase is automatic when lossless (amber dot and panel only when something would be dropped). New chats default to Inline.
+- *(2026-11-26, milestone 6)* How rebase places hunks.
+  - Each pending hunk is re-anchored on its own, so one edit inside a long edit loses only the hunks it touched.
+  - While the text the review last saw is known (in memory only, never stored), positions carry through the user's change exactly, and a hunk the change touched is dropped. Otherwise a hunk's surrounding text must occur exactly once.
+  - A rebased edit holds only the model's own words, so chat history never picks up note text the model didn't write.
+  - The display mode is stored per chat; chats from before milestone 6 use the setting.
+  - Proposals in the open chat follow note renames.
+  - `@codemirror/state` and `@codemirror/view` are pinned dev dependencies, for types only. They are the versions Obsidian bundles, and the build leaves them external.
 - *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.

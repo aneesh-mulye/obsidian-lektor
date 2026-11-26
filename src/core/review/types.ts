@@ -11,7 +11,8 @@ export interface EditSpec {
   reason?: string;
 }
 
-export type HunkStatus = 'pending' | 'accepted' | 'rejected';
+/** `dropped`: a rebase could not re-anchor it after the user's edits; it can never be applied. */
+export type HunkStatus = 'pending' | 'accepted' | 'rejected' | 'dropped';
 
 export interface HunkRecord {
   readonly id: string;
@@ -22,6 +23,8 @@ export interface HunkRecord {
   readonly end: number;
   readonly after: string;
   readonly status: HunkStatus;
+  /** Why a rebase dropped it. */
+  readonly dropReason?: string;
 }
 
 export interface EditProposal {
@@ -34,6 +37,8 @@ export interface EditProposal {
   readonly anchors: readonly number[];
   /** Fingerprint of the text the note should have now, if nothing but this review changed it. */
   readonly expect: string;
+  /** Accepted hunks already reflected in `anchors` (set by a rebase); they no longer shift positions. */
+  readonly settled?: readonly string[];
   readonly hunks: readonly HunkRecord[];
   readonly createdAt: number;
   readonly model: ModelRef;

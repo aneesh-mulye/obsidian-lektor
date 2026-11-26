@@ -146,18 +146,39 @@ const chat = (chatId: string): fc.Arbitrary<Chat> =>
               edits: fc.array(fc.record({ find: text, replace: text, reason: fc.string() }, { requiredKeys: ['find', 'replace'] }), { maxLength: 2 }),
               anchors: fc.array(fc.nat(), { maxLength: 2 }),
               expect: fc.string(),
-              hunks: fc.array(fc.record({ id: fc.string(), edit: fc.nat(), start: fc.nat(), end: fc.nat(), after: text, status: fc.constantFrom('pending' as const, 'accepted' as const, 'rejected' as const) }), { maxLength: 3 }),
+              settled: fc.array(fc.string(), { maxLength: 2 }),
+              hunks: fc.array(
+                fc.record(
+                  {
+                    id: fc.string(),
+                    edit: fc.nat(),
+                    start: fc.nat(),
+                    end: fc.nat(),
+                    after: text,
+                    status: fc.constantFrom('pending' as const, 'accepted' as const, 'rejected' as const, 'dropped' as const),
+                    dropReason: fc.string(),
+                  },
+                  { requiredKeys: ['id', 'edit', 'start', 'end', 'after', 'status'] },
+                ),
+                { maxLength: 3 },
+              ),
               createdAt: fc.nat(),
               model: ref,
-            }),
+            }, { requiredKeys: ['kind', 'id', 'path', 'edits', 'anchors', 'expect', 'hunks', 'createdAt', 'model'] }),
             fc.record({ kind: fc.constant('note' as const), id: fc.string(), path: fc.string(), content: text, status: fc.constantFrom('pending' as const, 'created' as const, 'dismissed' as const), createdAt: fc.nat(), model: ref }),
           ),
           { maxKeys: 2 },
         ),
         { nil: undefined },
       ),
+      displayMode: fc.option(fc.constantFrom('prose' as const, 'sidebar' as const, 'inline' as const), { nil: undefined }),
     })
-    .map(({ sentContext, proposals, ...c }) => ({ ...c, ...(sentContext === undefined ? {} : { sentContext }), ...(proposals === undefined ? {} : { proposals }) }));
+    .map(({ sentContext, proposals, displayMode, ...c }) => ({
+      ...c,
+      ...(sentContext === undefined ? {} : { sentContext }),
+      ...(proposals === undefined ? {} : { proposals }),
+      ...(displayMode === undefined ? {} : { displayMode }),
+    }));
 
 /** What a load gives back: mid-stream replies as stopped; selection text and "changed" marks never stored. */
 const normalised = (c: Chat): Chat => ({

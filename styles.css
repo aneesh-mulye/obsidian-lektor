@@ -262,6 +262,7 @@
 }
 
 .lektor-hunk-text del,
+.lektor-rebase-dropped del,
 .lektor-history-modal del {
   color: var(--text-error);
   text-decoration: line-through;
@@ -269,6 +270,7 @@
 }
 
 .lektor-hunk-text ins,
+.lektor-rebase-dropped ins,
 .lektor-history-modal ins {
   color: var(--text-success);
   text-decoration: underline;
@@ -276,7 +278,8 @@
 }
 
 .lektor-hunk.is-accepted,
-.lektor-hunk.is-rejected {
+.lektor-hunk.is-rejected,
+.lektor-hunk.is-dropped {
   opacity: 0.6;
 }
 
@@ -568,4 +571,101 @@
 .lektor-exclusions textarea {
   min-height: 8em;
   font-family: var(--font-monospace);
+}
+
+/* Staleness (DESIGN.md § Staleness and rebase) */
+
+.lektor-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  min-width: 10px;
+  padding: 0;
+  border-radius: 50%;
+  border: none;
+  box-shadow: none;
+  background: var(--text-faint);
+  opacity: 0.5;
+  cursor: default;
+}
+
+.lektor-dot.is-stale {
+  background: var(--color-orange);
+  opacity: 1;
+  cursor: pointer;
+}
+
+.lektor-rebase-panel {
+  margin: var(--size-4-2) 0;
+  padding: var(--size-4-2);
+  border: 1px solid var(--color-orange);
+  border-radius: var(--radius-s);
+  background: var(--background-secondary);
+}
+
+.lektor-rebase-dropped {
+  margin: var(--size-4-1) 0;
+  padding-left: var(--size-4-4);
+}
+
+.lektor-rebase-reason {
+  color: var(--text-muted);
+}
+
+.lektor-proposal-details > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  margin-top: var(--size-4-1);
+}
+
+/* Inline review in the editor */
+
+.lektor-inline-del {
+  color: var(--text-error);
+  text-decoration: line-through;
+  background: rgba(var(--color-red-rgb), 0.12);
+}
+
+.lektor-inline-hunk {
+  white-space: pre-wrap;
+}
+
+.lektor-inline-ins {
+  color: var(--text-success);
+  text-decoration: underline;
+  background: rgba(var(--color-green-rgb), 0.12);
+}
+
+.lektor-inline-button {
+  display: inline-flex;
+  vertical-align: middle;
+  padding: 0 2px;
+  height: auto;
+  --icon-size: 14px;
+}
+
+.lektor-inline-pill {
+  position: absolute;
+  top: var(--size-4-2);
+  right: var(--size-4-4);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  padding: var(--size-2-2) var(--size-4-3);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+  font-size: var(--font-ui-small);
+}
+
+.lektor-inline-pill.is-hidden {
+  display: none;
+}
+
+.lektor-inline-all {
+  padding: 0 var(--size-4-2);
+  height: auto;
+  font-size: var(--font-ui-smaller);
 }

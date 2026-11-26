@@ -31,7 +31,7 @@ export const ProposeNoteArgs = z.object({
 export type ProposeNoteArgs = z.infer<typeof ProposeNoteArgs>;
 
 /** Every start index of `needle` in `haystack`, overlapping included, stopping after `limit`. */
-function occurrences(haystack: string, needle: string, limit = 2): number[] {
+export function occurrences(haystack: string, needle: string, limit = 2): number[] {
   const out: number[] = [];
   if (needle === '') return out;
   let i = haystack.indexOf(needle);
@@ -100,7 +100,9 @@ export function locateHunk(text: string, p: EditProposal, hunkId: string): Splic
   let regionAt: number;
   if (fingerprint(text) === p.expect) {
     const anchor = p.anchors[h.edit]!;
-    regionAt = anchor + p.hunks.filter((k) => k.status === 'accepted' && p.anchors[k.edit]! < anchor).reduce((s, k) => s + delta(k), 0);
+    const settled = new Set(p.settled ?? []);
+    regionAt =
+      anchor + p.hunks.filter((k) => k.status === 'accepted' && !settled.has(k.id) && p.anchors[k.edit]! < anchor).reduce((s, k) => s + delta(k), 0);
     if (text.slice(regionAt, regionAt + region.length) !== region) return null;
   } else {
     const at = occurrences(text, region);

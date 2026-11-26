@@ -146,7 +146,7 @@ export type ReadonlySettings = DeepReadonly<Settings>;
 export const DEFAULT_SETTINGS: Settings = deepFreeze({
   version: SETTINGS_VERSION,
   models: { ollama: { baseUrl: 'http://127.0.0.1:11434', contextLength: 32768 }, defaultModel: null },
-  review: { defaultDisplayMode: 'sidebar' },
+  review: { defaultDisplayMode: 'inline' },
   context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3, respectObsidianExclusions: true },
   tools: {
     searchesPerMessage: 5,

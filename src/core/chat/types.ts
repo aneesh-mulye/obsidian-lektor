@@ -5,6 +5,7 @@ import type { ContextManifest } from '../context/prepare';
 import type { ContextState } from '../context/state';
 import type { Capabilities, ChatProvider, ModelRef, ToolCall, ToolDefinition } from '../providers/types';
 import type { Proposal } from '../review/types';
+import type { DisplayMode } from '../settings';
 import type { ApprovalRequest, StepResult } from '../tools/types';
 
 export type ReplyStatus = 'streaming' | 'complete' | 'stopped' | 'truncated' | 'error';
@@ -73,6 +74,13 @@ export interface Chat {
   readonly toolsDisabled?: boolean;
   /** Proposals made in this chat, by id; their cards appear where the model made them. */
   readonly proposals?: Readonly<Record<string, Proposal>>;
+  /** How this chat shows proposals (the header toggle). Chats saved before milestone 6 use the setting. */
+  readonly displayMode?: DisplayMode;
+}
+
+/** The chat's display mode, or the setting's default for chats that never chose one. */
+export function displayModeOf(chat: Chat, fallback: DisplayMode): DisplayMode {
+  return chat.displayMode ?? fallback;
 }
 
 /** The tools available to one reply: definitions to offer, and a way to run calls. One per user message. */
@@ -87,6 +95,8 @@ export interface ToolRun {
     instructions: string;
     extract(reply: string): Promise<{ proposals: Proposal[]; problems: string[] }>;
   };
+  /** A system instruction for this reply (Prose mode: describe changes in words). */
+  instructions?: string;
 }
 
 export interface ToolsDeps {

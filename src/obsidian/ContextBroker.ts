@@ -67,7 +67,13 @@ export class ContextBroker {
   }
 
   /** Keep the index up to date with the vault. `onRename` gets old and new paths; `onDelete` the path of a deleted note. */
-  watch(owner: Component, onChange: () => void, onRename: (from: string, to: string) => void, onDelete: (path: string) => void): void {
+  watch(
+    owner: Component,
+    onChange: () => void,
+    onRename: (from: string, to: string) => void,
+    onDelete: (path: string) => void,
+    onModify?: (path: string) => void,
+  ): void {
     const changed = debounce(
       () => {
         this.refresh();
@@ -78,6 +84,13 @@ export class ContextBroker {
     );
     owner.registerEvent(this.app.metadataCache.on('resolved', changed));
     owner.registerEvent(this.app.vault.on('create', changed));
+    if (onModify) {
+      owner.registerEvent(
+        this.app.vault.on('modify', (file) => {
+          if (file instanceof TFile && file.extension === 'md') onModify(file.path);
+        }),
+      );
+    }
     owner.registerEvent(
       this.app.vault.on('delete', (file) => {
         if (file instanceof TFile && file.extension === 'md') onDelete(file.path);

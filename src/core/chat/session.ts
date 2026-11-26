@@ -12,6 +12,7 @@ import type { ContextState } from '../context/state';
 import { MESSAGE_OVERHEAD, estimateTokens, fits, formatTokens } from '../context/tokens';
 import type { ChatMessage, ChatProvider, ChatRequest, ModelRef, ToolCall } from '../providers/types';
 import type { Proposal } from '../review/types';
+import type { DisplayMode } from '../settings';
 import type { ApprovalRequest } from '../tools/types';
 import { messagesTokens, roundMessages, titleFrom, toRequestMessages } from './transcript';
 import type { AssistantMessage, Chat, Clock, Message, ProviderLookup, ToolRun, ToolsDeps } from './types';
@@ -166,6 +167,7 @@ export class ChatSession {
       // One tool run (one budget) per user message (INVARIANTS.md T2).
       const editable = prepared ? [...new Set([...prepared.manifest.notes.map((n) => n.path), ...prepared.manifest.selections.map((x) => x.path)])] : [];
       const tools = this.deps.tools?.forReply({ chat: this.#chat, capabilities: caps, contextUrls: prepared?.urls ?? [], editable }) ?? null;
+      if (tools?.instructions) base.push({ role: 'system', content: tools.instructions });
       if (tools?.fenced) base.push({ role: 'system', content: tools.fenced.instructions });
 
       for (let round = 0; ; round++) {
@@ -322,6 +324,14 @@ export class ChatSession {
     });
     this.#emit();
     pending.resolve(approved);
+  }
+
+  /** Show this chat's proposals as prose, sidebar diffs or inline marks (the header toggle). */
+  setDisplayMode(mode: DisplayMode): void {
+    if (this.#chat.displayMode === mode) return;
+    this.#set({ ...this.#chat, displayMode: mode });
+    this.#emit();
+    if (this.#chat.messages.length > 0) this.#persist();
   }
 
   /** Turn the tools (the globe) on or off for this chat. */

@@ -21,6 +21,8 @@ import { ReviewManager } from './core/review/manager';
 import { fencedEdits, proposeEditTool, proposeNoteTool } from './core/review/tools';
 import { EditHistoryModal } from './obsidian/EditHistoryModal';
 import { ReviewController } from './obsidian/ReviewController';
+import { inlineSource, watchStaleness } from './obsidian/InlineReview';
+import { focusProposal } from './obsidian/ui/Review';
 import { LektorView, VIEW_TYPE_LEKTOR } from './obsidian/LektorView';
 import { FolderPicker, NotePicker } from './obsidian/Pickers';
 import { PluginStorage } from './obsidian/PluginStorage';
@@ -75,10 +77,12 @@ export default class LektorPlugin extends Plugin {
     // Review (DESIGN.md § Edits and diff review): models propose; only a click applies, through ReviewController.
     const editLog = new EditLog(storage, newId);
     this.editLog = editLog;
+    const controller = new ReviewController(this.app);
     const review = new ReviewManager({
-      applier: new ReviewController(this.app),
+      applier: controller,
       log: editLog,
       readNote: (path) => this.broker.index.read(path),
+      editorText: (path) => controller.editorText(path),
       clock: { now: () => Date.now() },
     });
     this.review = review;
@@ -97,8 +101,9 @@ export default class LektorPlugin extends Plugin {
     registry.register(proposeNoteTool(reviewDeps));
     const tools = toolRuns(registry, {
       webNames: () => [...(settings().tools.searchProvider !== 'none' ? ['web_search'] : []), 'fetch_page'],
-      // Prose mode describes changes in words, so no edit tools (DESIGN.md § Display modes).
-      reviewNames: () => (settings().review.defaultDisplayMode === 'prose' ? [] : ['propose_edit', 'propose_note']),
+      // Prose mode chats get no edit tools (DESIGN.md § Display modes; toolRuns checks the chat's mode).
+      reviewNames: () => ['propose_edit', 'propose_note'],
+      displayMode: () => settings().review.defaultDisplayMode,
       limits: () => ({ searches: settings().tools.searchesPerMessage, fetches: settings().tools.fetchesPerMessage }),
       fenced: (editable, model) => fencedEdits(reviewDeps, editable, model),
     });
@@ -125,8 +130,25 @@ export default class LektorPlugin extends Plugin {
         onNotice: notice,
       },
       storeFullTranscripts: () => settings().privacy.storeFullTranscripts,
+      defaultDisplayMode: () => settings().review.defaultDisplayMode,
     });
     const context = this.chats.context!;
+
+    // Inline review and staleness (DESIGN.md § Staleness and rebase): only the chat open in the sidebar.
+    const inlineDeps = {
+      chats: this.chats,
+      review,
+      defaultMode: () => settings().review.defaultDisplayMode,
+      editorText: (path: string) => controller.editorText(path),
+      readNote: (path: string) => this.broker.index.read(path),
+      showProposal: (id: string) => {
+        focusProposal(id);
+        void this.activateView();
+      },
+    };
+    controller.registerInline(this, inlineSource(inlineDeps));
+    const staleness = watchStaleness(inlineDeps);
+    this.register(staleness.dispose);
 
     // Keep the index and the chips in step with the vault.
     this.broker.watch(
@@ -135,9 +157,11 @@ export default class LektorPlugin extends Plugin {
       (from, to) => {
         this.broker.refresh();
         context.renamed(from, to);
+        review.renamed(this.chats.session, from, to);
         void editLog.renamed(from, to);
       },
       (path) => void this.offerCleanup(history, editLog, path),
+      (path) => staleness.modified(path),
     );
     this.app.workspace.onLayoutReady(() => {
       this.broker.refresh();
@@ -214,7 +238,11 @@ export default class LektorPlugin extends Plugin {
           clearAllChats,
           context: contextUi,
           searchConfigured: () => settings().tools.searchProvider !== 'none',
-          review: { manager: review, openNote: (path) => void this.app.workspace.openLinkText(path, '', false) },
+          review: {
+            manager: review,
+            openNote: (path) => void this.app.workspace.openLinkText(path, '', false),
+            defaultMode: () => settings().review.defaultDisplayMode,
+          },
         }),
     );
     this.addRibbonIcon('message-square', 'Open Lektor', () => void this.activateView());

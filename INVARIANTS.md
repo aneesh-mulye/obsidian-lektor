@@ -8,7 +8,7 @@ Stateful tests use `fc.commands(…, { size: 'large' })`. With the default size,
 
 Every invariant's test has been mutation-checked: each guard in the code was removed in turn, and the test had to fail. Mutants that survived led to stronger generators or extra tests. The remaining survivors are equivalent (redundant code that changes no behaviour).
 
-Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk); "normalises -0 to 0, on load and on update" (S2, seed 1865398749 in a CI-strength run: `-0` was stored as `-0` but saved as `0`). `tests/core/ndjson.property.test.ts` › "returns exactly JSON.parse of each line, -0 included" (N1, seed 316671435: the test's model compared against the in-memory `-0` instead of what JSON puts on the wire; the decoder was right). `tests/core/ollama.property.test.ts` › "sends tool-call arguments as JSON (so -0 becomes 0)" (O2, full-suite run, seed not captured: the same `-0` model mistake, in tool-call arguments). `tests/core/review.property.test.ts` › "reverting a change that emptied the note puts the text back" (W3–W5, seed -1474712944: correct behaviour; the checker treated the empty anchor of an emptied note as "not found").
+Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk); "normalises -0 to 0, on load and on update" (S2, seed 1865398749 in a CI-strength run: `-0` was stored as `-0` but saved as `0`). `tests/core/ndjson.property.test.ts` › "returns exactly JSON.parse of each line, -0 included" (N1, seed 316671435: the test's model compared against the in-memory `-0` instead of what JSON puts on the wire; the decoder was right). `tests/core/ollama.property.test.ts` › "sends tool-call arguments as JSON (so -0 becomes 0)" (O2, full-suite run, seed not captured: the same `-0` model mistake, in tool-call arguments). `tests/core/review.property.test.ts` › "reverting a change that emptied the note puts the text back" (W3–W5, seed -1474712944: correct behaviour; the checker treated the empty anchor of an emptied note as "not found"). `tests/core/rebase.property.test.ts` › "accepting one hunk cannot make another ambiguous after the user edited the note" (B1, CI-strength run: a real bug; rebase now re-places every hunk whenever the note changed outside the review); "without the previous text, a passage that now appears twice is dropped, never guessed" and "without the previous text, two hunks that would now overlap keep only the first" (two mutants of the context-search fallback survived the properties).
 
 ---
 
@@ -446,6 +446,11 @@ Shared generator, the **edit world**: a few notes with random Unicode text (repe
 `tests/lint/review-controller.test.ts`
 
 - **Property:** `src/obsidian/ReviewController.ts` writes only through `vault.process`, `vault.create`, `fileManager.trashFile` and `editor.replaceRange`, and every one of those calls sits inside a method reached from an accept, create or revert action. This is checked by reading the source, as a backstop to G3.
+- **Since milestone 6 (inline review):**
+  - ReviewController's editor transactions carry effects only (decorations), never changes.
+  - The inline ✓, ✕, Accept all and Reject all call the `clicks` handlers only from button click handlers.
+  - Those handlers, in `src/obsidian/InlineReview.ts`, are the only code there that calls accept, and `main.ts` hands them only to ReviewController.
+  - `main.ts` constructs ReviewController once, gives it to the ReviewManager as its applier, and otherwise uses it only to read the open editor's text and register inline review.
 
 ### Checked in a real Obsidian (milestone 5)
 
@@ -459,6 +464,62 @@ On 2026-11-26, in a separate instance, with `qwen3.8:27b` proofreading `fixtures
 
 Note for future runs: the test instance had a stray Obsidian Settings window open, and Obsidian opens modals in the focused window. Close it, or focus the main window, before checking for modals.
 
+## Milestone 6: Inline review, staleness and Prose mode
+
+### B1. Rebase honesty (design invariant 5) — active
+
+`tests/core/rebase.property.test.ts`
+
+- **Generator:** the edit world's proposals, some hunks accepted or rejected, then random user edits (typing, deleting, pasting copies, rewriting whole passages), then a rebase.
+- **Properties:**
+  - Every previously pending hunk is either kept (pending, and locatable now) or dropped (with a reason). The dropped list is exactly the pending hunks minus the kept ones.
+  - Kept hunks change the same text into the same replacement as before.
+  - Decided hunks are untouched.
+  - A dropped or stale hunk can never be applied.
+  - With no user edits, a rebase is the identity: nothing is dropped.
+  - After a rebase, accepting the kept hunks in any order writes each one exactly.
+  - When the text the review last saw is known (kept in memory, never stored), positions carry through the change exactly: a hunk the change didn't touch lands where the change moved it, and a hunk it touched is dropped. Without that text, each hunk is searched for by its surrounding text, which must occur exactly once.
+  - A rebase stores only the model's own text (its edits, with accepted hunks applied), never the user's newer note text (H5). Repeated rebases keep at most one edit per hunk.
+- **Counterexample means:** the panel lies about what survived, a hunk lands somewhere the user didn't see it, or chat history picks up note text the model never wrote.
+
+### B2. The staleness dot tells the truth — active
+
+`tests/core/rebase.property.test.ts`
+
+- **Property:** a proposal's stale hunks are exactly its pending hunks that cannot be located in the note's current text. The dot is neutral exactly when there are none.
+
+### B3. Automatic rebase is lossless — active
+
+`tests/core/rebase.property.test.ts`, and the W3 stateful run (`tests/core/review.property.test.ts`), which now also checks notes and rebases
+
+- **Properties:**
+  - When a note changes, Lektor rebases a proposal by itself only if no hunk would be dropped. Otherwise it leaves the proposal untouched and reports its stale hunks.
+  - After any rebase, accepting kept hunks still writes exactly those hunks, at one place each (W3 holds through rebases).
+
+### B4. Inline marks match what would be applied — active
+
+`tests/core/rebase.property.test.ts`
+
+- **Property:** the inline marks for a note are exactly its locatable pending hunks. Each mark's range is inside the text, covers exactly the hunk's `before` text, and offers exactly its `after` text.
+- **Counterexample means:** what you see marked in the editor is not what ✓ would do.
+
+### B5. Prose mode proposes nothing — active
+
+`tests/core/tools.property.test.ts`
+
+- **Property:** for a chat in Prose mode, no request offers `propose_edit` or `propose_note`, and no fenced-edit instructions are added, whatever the model or context. The Prose instruction is sent instead (also checked through a real session in `tests/core/toolloop.property.test.ts`).
+
+### Checked in a real Obsidian (milestone 6)
+
+On 2026-11-26, in a separate instance, with `qwen3.8:27b` proofreading `fixtures/vault/Drafts/Essay.md` in a new chat, which started in Inline mode:
+
+- **Inline:** three marks in the editor ("the " deleted; "it's keepers lived their" → "its keepers lived there"; "fourty" → "forty"), each with ✓ / ✕. The pill read "3 pending · Accept all · Reject all". The sidebar card was the folded summary. Disk and editor were unchanged.
+- **Typing elsewhere** (" (draft)" after the heading): the same three marks, and the dot stayed neutral. This was the silent lossless rebase.
+- **✓ in the editor:** the editor changed exactly "The the lighthouse" → "The lighthouse", and the pill went to 2 pending.
+- **Typing inside a hunk** ("keepersX"): that mark disappeared, and both dots (pill and card) turned amber. The pill's dot opened the card's panel. Rebase reported "1 change kept. 1 dropped" and named the dropped change and its reason. Afterwards "fourty" was still marked, with a neutral dot.
+- **Sidebar diff:** the editor marks went away, and the card showed all three hunks.
+- **Prose:** the next request offered only `web_search` and `fetch_page`, and carried the Prose instruction as a system message. No marks were shown.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.
@@ -467,7 +528,7 @@ These come from `docs/DESIGN.md` § Testing. Each gets a full generator, propert
 2. **Backlink lists carry no content:** active as X3.
 3. **No write without accept:** active as W3.
 4. **Hunk algebra:** active as W1.
-5. **Rebase honesty:** planned (M6).
+5. **Rebase honesty:** active as B1.
 6. **Undo safety:** active as W4.
 7. **History completeness:** active as W5.
 8. **Proposal validation:** active as W2.
