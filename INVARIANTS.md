@@ -924,6 +924,7 @@ Shared generator, the **bridge world**: random bridge options (model aliases, in
   - an error `result` treated as success;
   - web tools offered twice, the globe and the fetch mode ignored, and Claude Code's own activity dropped.
 - **One mutant (no kill on Stop) survived at first.** A `finally` also kills the process, but only after Claude Code prints something more. If it hangs silently, Stop would leave it running and still able to call Lektor's tools. A test now stops a silent process, and the mutant is killed.
+- **A test-model mistake from milestone 4 surfaced in a CI run:** O1 expected tool-call arguments exactly as generated, but they reach Lektor as JSON, and `fc.jsonValue()` sometimes makes `-0`, which JSON writes as `0` (about once in 1,800 values). O1's model, and the H1 history model, which had the same latent mistake, now expect what crosses the wire. A regression test covers it. The adapter was right.
 - **The live check found one bug, now fixed:** the globe's tooltip kept the old fetch mode, because capabilities were read again only when the model changed. They are now read again for each new chat and after each message.
 
 ### Checked in a real Obsidian (milestone 10)

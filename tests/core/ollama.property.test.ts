@@ -129,7 +129,8 @@ function expectedEvents(s: Script): Shape[] {
         break;
       case 'toolcall': {
         if (l.id === undefined) calls += 1; // ids are generated only for calls that arrive without one
-        let args = l.args;
+        // What crosses the wire is JSON: -0 arrives as 0 (fc.jsonValue makes -0 about once in 1,800 values).
+        let args: unknown = typeof l.args === 'string' ? l.args : (JSON.parse(JSON.stringify(l.args)) as unknown);
         if (typeof args === 'string') {
           try {
             args = JSON.parse(args);
@@ -250,6 +251,15 @@ describe('OllamaProvider.stream (INVARIANTS.md O1)', () => {
         expect(events.map(shape)).toEqual(expectedEvents(s));
       }),
     );
+  });
+
+  // Regression (O1, a CI run during milestone 10; a mistake in the test model since milestone 4): tool-call arguments
+  // containing -0 arrive as 0, because the server sends JSON. The model now expects what crosses the wire.
+  it('O1: tool-call arguments are what the server sent as JSON (-0 arrives as 0)', async () => {
+    const s = { status: 200, errorBody: '', lines: [{ kind: 'toolcall' as const, name: 'x', args: { n: -0, list: [-0] }, id: 'call_a' }, { kind: 'done' as const }], ending: 'close' as const, offsets: [], requestThrows: false, thinking: false, showFails: false };
+    const { events } = await run(new OllamaProvider(new FakeHttp(s), () => 'http://127.0.0.1:11434', () => 32768), [{ role: 'user', content: 'hi' }], null);
+    expect(events.map(shape)).toEqual(expectedEvents(s));
+    expect(events[0]).toEqual({ type: 'tool_call', call: { id: 'call_a', name: 'x', arguments: { n: 0, list: [0] } } });
   });
 
   it('O1: after an abort, the only further event is done: aborted', async () => {

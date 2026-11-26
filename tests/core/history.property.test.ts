@@ -302,7 +302,8 @@ const commands = fc.commands(
   [
     id.chain(chat).map((ch) => c(`save(${ch.id})`, async (m, r) => {
       await r.history.save(ch);
-      m.set(ch.id, normalised(structuredClone(ch)));
+      // The file holds JSON: what comes back is the chat after a JSON round trip (-0 in tool arguments arrives as 0).
+      m.set(ch.id, normalised(JSON.parse(JSON.stringify(ch)) as Chat));
     })),
     fc.tuple(id, id.chain(junk)).map(([k, j]) => c(`corrupt(${k})`, async (m, r) => {
       await r.storage.write('chats', k, j);
