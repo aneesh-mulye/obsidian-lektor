@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { type HttpClient, type HttpRequest, type HttpResponse, readText } from '../http';
 import { decodeNdjson } from './ndjson';
 import { ProviderError, guardStream } from './stream';
-import type { Capabilities, ChatEvent, ChatProvider, ChatRequest, ModelInfo } from './types';
+import type { Capabilities, ChatEvent, ChatMessage, ChatProvider, ChatRequest, ModelInfo } from './types';
 
 const Tags = z.object({
   models: z.array(
@@ -30,7 +30,15 @@ const Show = z.object({
 
 const Line = z.object({
   error: z.unknown().optional(),
-  message: z.object({ content: z.string().optional(), thinking: z.string().optional() }).optional(),
+  message: z
+    .object({
+      content: z.string().optional(),
+      thinking: z.string().optional(),
+      tool_calls: z
+        .array(z.object({ id: z.string().optional(), function: z.object({ name: z.string(), arguments: z.unknown() }) }))
+        .optional(),
+    })
+    .optional(),
   done: z.boolean().optional(),
   done_reason: z.string().optional(),
   prompt_eval_count: z.number().optional(),
@@ -66,10 +74,30 @@ function parseJson<T>(schema: z.ZodType<T>, text: string, what: string): T {
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
+/** Ollama's message shapes: assistant tool calls carry `tool_calls`; tool results carry `tool_name`. */
+function toOllamaMessage(m: ChatMessage): Record<string, unknown> {
+  if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+    return { role: 'assistant', content: m.content, tool_calls: m.toolCalls.map((c) => ({ function: { name: c.name, arguments: c.arguments } })) };
+  }
+  if (m.role === 'tool') return { role: 'tool', content: m.content, tool_name: m.toolName };
+  return { role: m.role, content: m.content };
+}
+
+/** Ollama sends arguments as an object; some models send a JSON string. Anything else is passed on for the registry to reject. */
+function parseArguments(args: unknown): unknown {
+  if (typeof args !== 'string') return args;
+  try {
+    return JSON.parse(args) as unknown;
+  } catch {
+    return args;
+  }
+}
+
 export class OllamaProvider implements ChatProvider {
   readonly id = 'ollama';
   readonly label = 'Ollama';
   readonly #show = new Map<string, Promise<ShowInfo>>();
+  #calls = 0;
 
   /**
    * `baseUrl` and `contextLength` are read on every call, so a settings change applies at once.
@@ -154,7 +182,10 @@ export class OllamaProvider implements ChatProvider {
     const info = await this.show(req.model, signal);
     const body = {
       model: req.model,
-      messages: req.messages.map(({ role, content }) => ({ role, content })),
+      messages: req.messages.map(toOllamaMessage),
+      ...(req.tools && req.tools.length > 0
+        ? { tools: req.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })) }
+        : {}),
       stream: true,
       options: { num_ctx: this.numCtx(info) },
       ...(info.capabilities.includes('thinking') ? { think: true } : {}),
@@ -178,6 +209,9 @@ export class OllamaProvider implements ChatProvider {
       }
       if (line.message?.thinking) yield { type: 'reasoning', text: line.message.thinking };
       if (line.message?.content) yield { type: 'text', text: line.message.content };
+      for (const call of line.message?.tool_calls ?? []) {
+        yield { type: 'tool_call', call: { id: call.id ?? `call_${++this.#calls}`, name: call.function.name, arguments: parseArguments(call.function.arguments) } };
+      }
       if (line.done) {
         const input = line.prompt_eval_count;
         const output = line.eval_count;

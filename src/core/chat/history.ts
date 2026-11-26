@@ -42,6 +42,29 @@ const AssistantMessage = z.strictObject({
   promptEstimate: z.number().optional(),
   contextHash: z.string().optional(),
   notice: z.string().optional(),
+  steps: z
+    .array(
+      z.strictObject({
+        text: z.string(),
+        calls: z.array(
+          z.strictObject({
+            id: z.string(),
+            name: z.string(),
+            arguments: z.unknown(),
+            result: z
+              .strictObject({
+                ok: z.boolean(),
+                content: z.string(),
+                summary: z.string(),
+                limit: z.boolean().optional(),
+                urls: z.array(z.string()).optional(),
+              })
+              .optional(),
+          }),
+        ),
+      }),
+    )
+    .optional(),
 });
 
 /** Chips as stored: selections are a path, range and hash, never text (INVARIANTS.md H4). */
@@ -80,6 +103,7 @@ const ChatV1 = z.strictObject({
 const ChatV2 = ChatV1.extend({
   context: ContextRecord,
   sentContext: z.record(z.string(), z.string()).optional(),
+  toolsDisabled: z.boolean().optional(),
 });
 
 const FileSchema = z.discriminatedUnion('version', [
@@ -100,7 +124,13 @@ function toRecord(chat: Chat): unknown {
     }
     return c;
   });
-  return { ...chat, context: { followActive: chat.context.followActive, chips } };
+  // A pending approval is never saved: it can only be answered in the session that asked.
+  const messages = chat.messages.map((m) => {
+    if (m.role !== 'assistant' || m.approval === undefined) return m;
+    const { approval: _a, ...rest } = m;
+    return rest;
+  });
+  return { ...chat, messages, context: { followActive: chat.context.followActive, chips } };
 }
 
 export interface ChatSummary {
@@ -138,6 +168,16 @@ export class ChatHistory {
     }
     chats.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
     return { chats, unreadable };
+  }
+
+  /** Chats that sent this note to a model (from their replies' context manifests). */
+  async chatsSending(path: string): Promise<string[]> {
+    const out: string[] = [];
+    for (const id of await this.storage.list('chats')) {
+      const chat = this.parse(id, await this.storage.read('chats', id));
+      if (chat?.messages.some((m) => m.role === 'assistant' && m.context?.notes.some((n) => n.path === path))) out.push(id);
+    }
+    return out;
   }
 
   async delete(id: string): Promise<void> {

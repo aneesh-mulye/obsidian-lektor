@@ -317,6 +317,72 @@ On 2026-11-26, against a copy of `fixtures/vault` in a separate Obsidian 1.15.1 
 
 The user's own Obsidian profile was hashed before and after and was unchanged.
 
+## Milestone 4: Tools
+
+### T1. Tool arguments are validated before anything runs — active
+
+`tests/core/tools.property.test.ts`
+
+- **Generator:** tool calls with random names (registered, unregistered, registered but not enabled for the chat) and random arguments: any JSON value, JSON-in-a-string, missing or extra fields, wrong types.
+- **Property:** a tool's `run` is called only when its name is enabled and its arguments pass its zod schema. Every other call returns a tool error to the model, and no network request is made.
+- **Counterexample means:** a model can run a tool the user didn't allow, or with arguments the tool never expected.
+
+### T2. Caps hold (design invariant 9) — active
+
+`tests/core/tools.property.test.ts`, `fc.commands`
+
+- **Generator:** random sequences of `web_search` and `fetch_page` calls (valid and invalid, approved and denied) spread across messages and tool rounds, with random caps from 0 to 50.
+- **Property:** within one user message, executed searches never exceed the search cap and fetches never exceed the fetch cap, across all rounds. Each call over the cap returns a "limit reached" tool error and makes no request. Counts start again with the next message.
+- **Counterexample means:** a model can run up unbounded searches, or fetch unbounded pages, for a single message.
+
+### T3. Fetches need provenance or approval — active
+
+`tests/core/tools.property.test.ts`
+
+- **Generator:** known URLs (from search results, user messages and attached notes) and adversarial variants of them: an appended query or path, a different host or port, userinfo tricks (`https://known.example@evil.example/`), `http` versus `https`, a changed fragment, unicode, and non-http schemes. Approvals and denials are random.
+- **Property:** `fetch_page` requests a URL with no approval only if it equals a known URL after normalisation (which only lower-cases the host and drops the fragment). Any other URL asks first, and a denial makes no request. Non-http(s) URLs never reach the network.
+- **Counterexample means:** a model can smuggle note text out in a URL without the user seeing it.
+
+### T4. Search providers return clean results or a clear error — active
+
+`tests/core/search.property.test.ts`
+
+- **Generator:** for each provider (Tavily, Exa, Brave, SearXNG, DuckDuckGo), random HTTP statuses and bodies: valid responses with random fields, wrong shapes, invalid JSON, HTML in titles, `javascript:` and relative URLs, huge snippets. Queries and options are random.
+- **Property:** `search` either returns results whose URLs are all absolute http(s), whose titles and snippets are bounded plain text, and which are never more than requested, or it rejects with a `ProviderError`. It never throws anything else. Every request goes only to the provider's documented endpoint (or the configured SearXNG URL), carries the key only in the documented header, and never puts the key in the URL.
+- **Counterexample means:** a hostile search result injects markup or a dangerous link, or the key leaks into a URL or log.
+
+### C7. The tool loop (stateful) — active
+
+`tests/core/session.property.test.ts`
+
+- **Generator:** the C1–C6 run, extended with tool-call events, tool outcomes (success, error, limit), approvals that are granted, denied or interrupted by Stop, the per-chat tools toggle, and models with and without tool calling.
+- **Properties:**
+  - Tools are offered only when the chat's toggle is on and the model supports tool calling.
+  - After a round that ends in tool calls, the next request is the previous request plus exactly that round's assistant turn and one tool result per call, in order.
+  - The loop stops after at most 8 rounds.
+  - Stop during a tool call or an approval ends the reply as stopped, with no further request.
+  - Every round passes the C6 budget check.
+  - In later messages, a finished reply's tool rounds are sent back as they happened, and a failed reply's are not.
+- **Counterexample means:** the model sees tool results that don't match what ran, or the loop can run away.
+
+### H5 and S8 — active
+
+- **H5** (`tests/core/history.property.test.ts`): replies with tool rounds round-trip through history exactly. `chatsSending(path)` finds exactly the chats whose context manifests include the note.
+- **S8** (`tests/core/settings.property.test.ts`): settings v3 migrate to v4 losslessly. The new tool settings get their defaults: no search provider, 5 results, moderate safe search, no region, fetches capped at 4,000 tokens, and no keys. Settings hold only secret *names*, never key values.
+
+### Checked in a real Obsidian (milestone 4)
+
+On 2026-11-26, in the same kind of separate instance, with `qwen3.8:27b` and the requests to Ollama captured:
+
+- **DuckDuckGo:** a live search ran through `requestUrl` and the native tool loop. The second request was exactly `system user assistant(+1 call) tool`, the tool result was marked as untrusted web text, and the model answered with a source.
+- **Fetch provenance:** a URL the model had to construct (never written verbatim) raised an approval card showing the full URL. On Deny, the model received "declined" and the reply said so.
+- **The globe:** its label and style follow on, off and "page fetching only".
+- **Tavily:** a live search returned 5 results.
+- **Exa:** returned HTTP 402 (out of credits). That shows the request and the key were accepted, and the error reached the user verbatim. Exa's result parsing is covered by T4's fakes only.
+- **Keys:** neither key appeared in any request to Ollama or in Lektor's `data.json`, which held only the secret names.
+
+The user's own Obsidian profile was unchanged before and after.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.
@@ -329,7 +395,7 @@ These come from `docs/DESIGN.md` § Testing. Each gets a full generator, propert
 6. **Undo safety:** planned (M5).
 7. **History completeness:** planned (M5).
 8. **Proposal validation:** planned (M5).
-9. **Caps hold:** planned (M4).
+9. **Caps hold:** active as T2.
 10. **Lockdown flags are unconditional:** planned (M10, M11).
 11. **Preset parsing is total:** planned (M8).
 

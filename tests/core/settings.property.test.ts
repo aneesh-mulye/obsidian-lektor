@@ -27,6 +27,8 @@ import {
   validSettings,
   validV1Settings,
   validV2Settings,
+  validV3Settings,
+  toolSettings,
 } from './settings.arbitraries';
 
 /** What Obsidian's saveData/loadData does to our data: a JSON round-trip. */
@@ -142,9 +144,10 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v1;
         expect(store.settings).toEqual({
           ...rest,
-          version: 3,
+          version: 4,
           models: DEFAULT_SETTINGS.models,
           context: { ...rest.context, respectObsidianExclusions: true },
+          tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
         });
         expect(store.problems).toEqual([]);
         expect(store.exclusionsIntact).toBe(true);
@@ -159,10 +162,24 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v2;
         expect(store.settings).toEqual({
           ...rest,
-          version: 3,
+          version: 4,
           models: { ...rest.models, ollama: { ...rest.models.ollama, contextLength: 32768 } },
           context: { ...rest.context, respectObsidianExclusions: true },
+          tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
         });
+        expect(store.problems).toEqual([]);
+      }),
+    );
+  });
+
+  it('S8: version-3 settings migrate to version 4 losslessly, with no search provider and no keys', () => {
+    fc.assert(
+      fc.property(validV3Settings, (v3) => {
+        const store = SettingsStore.load(disk(v3));
+        const { version: _v, ...rest } = v3;
+        expect(store.settings).toEqual({ ...rest, version: 4, tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools } });
+        expect(store.settings.tools.searchProvider).toBe('none');
+        expect(store.settings.tools.secrets).toEqual({ tavily: '', exa: '', brave: '' });
         expect(store.problems).toEqual([]);
       }),
     );
@@ -264,6 +281,9 @@ const validField: Record<string, Record<string, fc.Arbitrary<unknown>>> = {
   tools: {
     searchesPerMessage: fc.integer({ min: 0, max: 50 }),
     fetchesPerMessage: fc.integer({ min: 0, max: 50 }),
+    searchProvider: toolSettings.map((t) => t.searchProvider),
+    resultCount: fc.integer({ min: 1, max: 20 }),
+    secrets: toolSettings.map((t) => t.secrets),
   },
   privacy: { storeFullTranscripts: fc.boolean() },
   models: {

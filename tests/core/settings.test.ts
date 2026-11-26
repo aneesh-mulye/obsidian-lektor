@@ -9,11 +9,21 @@ const disk = (v: unknown): unknown => JSON.parse(JSON.stringify(v)) as unknown;
 describe('SettingsStore', () => {
   it('has conservative defaults', () => {
     expect(DEFAULT_SETTINGS).toEqual({
-      version: 3,
+      version: 4,
       models: { ollama: { baseUrl: 'http://127.0.0.1:11434', contextLength: 32768 }, defaultModel: null },
       review: { defaultDisplayMode: 'sidebar' },
       context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3, respectObsidianExclusions: true },
-      tools: { searchesPerMessage: 5, fetchesPerMessage: 5 },
+      tools: {
+        searchesPerMessage: 5,
+        fetchesPerMessage: 5,
+        searchProvider: 'none',
+        resultCount: 5,
+        safeSearch: 'moderate',
+        region: '',
+        searxngUrl: '',
+        fetchMaxTokens: 4000,
+        secrets: { tavily: '', exa: '', brave: '' },
+      },
       privacy: { storeFullTranscripts: false },
     });
   });
@@ -36,7 +46,7 @@ describe('SettingsStore', () => {
 
     const bad = store.update({ tools: { searchesPerMessage: 2, fetchesPerMessage: 51 } });
     expect(bad.ok).toBe(false);
-    expect(store.settings.tools).toEqual({ searchesPerMessage: 3, fetchesPerMessage: 5 });
+    expect(store.settings.tools).toMatchObject({ searchesPerMessage: 3, fetchesPerMessage: 5 });
   });
 
   it('refuses to change exclusions through update()', () => {
@@ -116,10 +126,10 @@ describe('SettingsStore', () => {
   });
 
   it('reports settings from a newer version but keeps what it can read', () => {
-    const raw = { ...(disk(DEFAULT_SETTINGS) as object), version: 4 };
+    const raw = { ...(disk(DEFAULT_SETTINGS) as object), version: 5 };
     const store = SettingsStore.load(raw);
     expect(store.problems).toEqual([expect.objectContaining({ path: 'version' })]);
     expect(store.exclusionsIntact).toBe(true);
-    expect(store.settings.version).toBe(3);
+    expect(store.settings.version).toBe(4);
   });
 });

@@ -16,6 +16,8 @@ export interface HttpRequest {
 
 export interface HttpResponse {
   status: number;
+  /** Response headers, names lower-cased (may be absent in fakes). */
+  headers?: Record<string, string>;
   /** The response body as it arrives. */
   body: AsyncIterable<Uint8Array>;
 }

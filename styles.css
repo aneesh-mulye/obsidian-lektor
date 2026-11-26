@@ -136,6 +136,65 @@
   margin-top: var(--size-4-1);
 }
 
+/* Tools */
+
+.lektor-icon-button.is-warn {
+  color: var(--color-orange);
+}
+
+.lektor-icon-button.is-off {
+  color: var(--text-faint);
+}
+
+.lektor-tools {
+  margin: var(--size-4-1) 0;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.lektor-tools > summary {
+  cursor: pointer;
+}
+
+.lektor-tools ul {
+  margin: var(--size-4-1) 0 0;
+  padding-left: var(--size-4-5);
+}
+
+.lektor-tools li {
+  overflow-wrap: anywhere;
+}
+
+.lektor-tool-error {
+  color: var(--text-error);
+}
+
+.lektor-approval {
+  margin: var(--size-4-2) 0;
+  padding: var(--size-4-2) var(--size-4-3);
+  border: 1px solid var(--color-orange);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+}
+
+.lektor-approval-title {
+  font-weight: var(--font-semibold);
+  margin-bottom: var(--size-4-1);
+}
+
+.lektor-approval-detail {
+  display: block;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  font-size: var(--font-ui-small);
+}
+
+.lektor-approval-actions {
+  display: flex;
+  gap: var(--size-4-2);
+  margin-top: var(--size-4-2);
+}
+
 /* History */
 
 .lektor-history {

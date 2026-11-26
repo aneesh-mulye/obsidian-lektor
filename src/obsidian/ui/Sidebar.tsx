@@ -7,8 +7,9 @@ import { Menu } from 'obsidian';
 import { type ChangeEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChatSummary } from '../../core/chat/history';
 import type { ChatManager } from '../../core/chat/manager';
-import type { AssistantMessage, Chat } from '../../core/chat/types';
-import type { ChatProvider } from '../../core/providers/types';
+import type { AssistantMessage, Chat, ToolRound } from '../../core/chat/types';
+import type { Capabilities, ChatProvider } from '../../core/providers/types';
+import { normaliseUrl } from '../../core/tools/urls';
 import type { ModelRef } from '../../core/providers/types';
 import { ContextBar, type ContextUi } from './ContextBar';
 import { Icon, IconButton } from './Icon';
@@ -21,18 +22,20 @@ export interface SidebarProps {
   clearAllChats: () => Promise<void>;
   /** The context chips; absent if the context system is unavailable. */
   context?: ContextUi;
+  /** Whether a web search provider is set up. */
+  searchConfigured?: () => boolean;
 }
 
-/** The model's context window, from its capabilities (null while unknown). */
-function useWindow(providers: readonly ChatProvider[], model: ModelRef | null): number | null {
-  const [window, setWindow] = useState<number | null>(null);
+/** The model's capabilities (null while unknown). */
+function useCapabilities(providers: readonly ChatProvider[], model: ModelRef | null): Capabilities | null {
+  const [caps, setCaps] = useState<Capabilities | null>(null);
   useEffect(() => {
     let alive = true;
-    setWindow(null);
+    setCaps(null);
     const provider = model ? providers.find((p) => p.id === model.provider) : undefined;
     if (provider && model) {
       provider.capabilities(model.model).then(
-        (c) => alive && setWindow(c.contextWindow),
+        (c) => alive && setCaps(c),
         () => undefined,
       );
     }
@@ -40,13 +43,14 @@ function useWindow(providers: readonly ChatProvider[], model: ModelRef | null): 
       alive = false;
     };
   }, [providers, model?.provider, model?.model]);
-  return window;
+  return caps;
 }
 
-export function Sidebar({ manager, providers, clearAllChats, context }: SidebarProps) {
+export function Sidebar({ manager, providers, clearAllChats, context, searchConfigured }: SidebarProps) {
   const { chat, busy } = useSyncExternalStore(manager.subscribe, manager.snapshot);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const window = useWindow(providers, chat.model);
+  const caps = useCapabilities(providers, chat.model);
+  const window = caps?.contextWindow ?? null;
 
   return (
     <div
@@ -64,6 +68,8 @@ export function Sidebar({ manager, providers, clearAllChats, context }: SidebarP
         chat={chat}
         manager={manager}
         providers={providers}
+        caps={caps}
+        searchConfigured={searchConfigured?.() ?? false}
         historyOpen={historyOpen}
         onNewChat={() => {
           manager.newChat();
@@ -74,7 +80,12 @@ export function Sidebar({ manager, providers, clearAllChats, context }: SidebarP
       {historyOpen ? (
         <HistoryPanel manager={manager} currentId={chat.id} onOpened={() => setHistoryOpen(false)} clearAllChats={clearAllChats} />
       ) : (
-        <Conversation chat={chat} busy={busy} onRegenerate={() => manager.session.regenerate()} />
+        <Conversation
+          chat={chat}
+          busy={busy}
+          onRegenerate={() => manager.session.regenerate()}
+          onApprove={(id, ok) => manager.session.answerApproval(id, ok)}
+        />
       )}
       {context && <ContextBar ui={context} chat={chat} window={window} calibration={manager.session.calibration} />}
       <Composer
@@ -95,10 +106,20 @@ function errorText(err: unknown): string {
   return err instanceof Error && err.message ? err.message : 'not reachable';
 }
 
+function toolsState(on: boolean, caps: Capabilities | null, searchConfigured: boolean): { label: string; warn: boolean } {
+  const next = ' Changes apply from your next message.';
+  if (!on) return { label: `Tools off: no web search or page fetching.${next}`, warn: false };
+  if (caps && caps.toolCalling !== 'native') return { label: "Tools are on, but this model can't call tools.", warn: true };
+  if (!searchConfigured) return { label: `Tools on: page fetching only. Set up a search provider in Lektor's settings for web search.${next}`, warn: true };
+  return { label: `Tools on: web search and page fetching.${next}`, warn: false };
+}
+
 function Header(props: {
   chat: Chat;
   manager: ChatManager;
   providers: readonly ChatProvider[];
+  caps: Capabilities | null;
+  searchConfigured: boolean;
   historyOpen: boolean;
   onNewChat: () => void;
   onToggleHistory: () => void;
@@ -145,6 +166,19 @@ function Header(props: {
         <Icon name="chevron-down" />
       </button>
       <div className="lektor-header-actions">
+        {(() => {
+          const on = chat.toolsDisabled !== true;
+          const state = toolsState(on, props.caps, props.searchConfigured);
+          return (
+            <IconButton
+              icon="globe"
+              label={state.label}
+              active={on && !state.warn}
+              className={state.warn ? 'is-warn' : on ? '' : 'is-off'}
+              onClick={() => manager.session.setTools(!on)}
+            />
+          );
+        })()}
         <IconButton icon="square-pen" label="New chat" onClick={props.onNewChat} />
         <IconButton icon="history" label="Chat history" active={props.historyOpen} onClick={props.onToggleHistory} />
       </div>
@@ -155,7 +189,7 @@ function Header(props: {
 // ---------------------------------------------------------------------------
 // Conversation
 
-function Conversation({ chat, busy, onRegenerate }: { chat: Chat; busy: boolean; onRegenerate: () => void }) {
+function Conversation({ chat, busy, onRegenerate, onApprove }: { chat: Chat; busy: boolean; onRegenerate: () => void; onApprove: (id: string, ok: boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -186,15 +220,17 @@ function Conversation({ chat, busy, onRegenerate }: { chat: Chat; busy: boolean;
             {m.content}
           </div>
         ) : (
-          <Reply key={m.id} message={m} canRegenerate={i === last && !busy} onRegenerate={onRegenerate} />
+          <Reply key={m.id} message={m} canRegenerate={i === last && !busy} onRegenerate={onRegenerate} onApprove={onApprove} />
         ),
       )}
     </div>
   );
 }
 
-function Reply({ message: m, canRegenerate, onRegenerate }: { message: AssistantMessage; canRegenerate: boolean; onRegenerate: () => void }) {
+function Reply(props: { message: AssistantMessage; canRegenerate: boolean; onRegenerate: () => void; onApprove: (id: string, ok: boolean) => void }) {
+  const { message: m, canRegenerate, onRegenerate, onApprove } = props;
   const streaming = m.status === 'streaming';
+  const steps = m.steps ?? [];
   return (
     <div className="lektor-message lektor-assistant">
       {m.reasoning !== '' && (
@@ -203,8 +239,25 @@ function Reply({ message: m, canRegenerate, onRegenerate }: { message: Assistant
           <div className="lektor-reasoning-text">{m.reasoning}</div>
         </details>
       )}
+      {steps.map((round, k) => (
+        <ToolRoundView key={k} round={round} />
+      ))}
+      {m.approval && (
+        <div className="lektor-approval" role="group" aria-label={m.approval.title}>
+          <div className="lektor-approval-title">{m.approval.title}</div>
+          <code className="lektor-approval-detail">{m.approval.detail}</code>
+          <div className="lektor-approval-actions">
+            <button type="button" className="mod-cta" onClick={() => onApprove(m.approval!.id, true)}>
+              Allow
+            </button>
+            <button type="button" onClick={() => onApprove(m.approval!.id, false)}>
+              Deny
+            </button>
+          </div>
+        </div>
+      )}
       {m.content !== '' && <SafeMarkdown text={m.content} />}
-      {streaming && m.content === '' && m.reasoning === '' && <div className="lektor-pending" aria-label="Waiting for the model">…</div>}
+      {streaming && m.content === '' && m.reasoning === '' && steps.length === 0 && <div className="lektor-pending" aria-label="Waiting for the model">…</div>}
       {m.status === 'stopped' && <div className="lektor-note">Stopped.</div>}
       {m.status === 'truncated' && <div className="lektor-note">Cut off at the model’s length limit.</div>}
       {m.status === 'error' && <div className="lektor-error">{m.error ?? 'The reply failed.'}</div>}
@@ -214,6 +267,51 @@ function Reply({ message: m, canRegenerate, onRegenerate }: { message: Assistant
         </div>
       )}
     </div>
+  );
+}
+
+/** One tool round: what the model said, then one line for its calls (expandable). */
+function ToolRoundView({ round }: { round: ToolRound }) {
+  const searches = round.calls.filter((c) => c.name === 'web_search');
+  const fetches = round.calls.filter((c) => c.name === 'fetch_page');
+  const results = searches.reduce((t, c) => t + (c.result?.urls?.length ?? 0), 0);
+  const parts: string[] = [];
+  const okSearches = searches.filter((c) => c.result?.ok).length;
+  const failedSearches = searches.filter((c) => c.result && !c.result.ok && !c.result.limit).length;
+  if (okSearches > 0) parts.push(`Searched: ${okSearches} ${okSearches === 1 ? 'query' : 'queries'} · ${results} ${results === 1 ? 'result' : 'results'}`);
+  if (failedSearches > 0) parts.push(failedSearches === 1 ? 'Search failed' : `${failedSearches} searches failed`);
+  const fetched = fetches.filter((c) => c.result?.ok).length;
+  const notFetched = fetches.filter((c) => c.result && !c.result.ok && !c.result.limit).length;
+  if (fetched > 0) parts.push(`Fetched ${fetched} ${fetched === 1 ? 'page' : 'pages'}`);
+  if (notFetched > 0) parts.push(notFetched === 1 ? 'Fetch failed or declined' : `${notFetched} fetches failed or declined`);
+  const others = round.calls.length - searches.length - fetches.length;
+  if (others > 0) parts.push(`${others} other tool ${others === 1 ? 'call' : 'calls'}`);
+  if (round.calls.some((c) => c.result?.limit)) parts.push('limit reached');
+  if (round.calls.some((c) => !c.result)) parts.push('working…');
+  return (
+    <>
+      {round.text !== '' && <SafeMarkdown text={round.text} />}
+      <details className="lektor-tools">
+        <summary>{parts.join(' · ')}</summary>
+        <ul>
+          {round.calls.map((c) => (
+            <li key={c.id} className={c.result && !c.result.ok ? 'is-failed' : ''}>
+              <span>{c.result ? c.result.summary : `${c.name}…`}</span>
+              {c.result && !c.result.ok && <div className="lektor-tool-error">{c.result.content}</div>}
+              {(c.result?.urls ?? []).map((u) =>
+                normaliseUrl(u) === u ? (
+                  <div key={u}>
+                    <a className="external-link" href={u} target="_blank" rel="noopener noreferrer">
+                      {u}
+                    </a>
+                  </div>
+                ) : null,
+              )}
+            </li>
+          ))}
+        </ul>
+      </details>
+    </>
   );
 }
 

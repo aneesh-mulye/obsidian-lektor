@@ -33,6 +33,7 @@ describe('prepareContext, recordSent, restoreContext', () => {
       message: null,
       tokens: 0,
       manifest: { notes: [], selections: [], backlinkLists: 0, excluded: 0 },
+      urls: [],
     });
   });
 

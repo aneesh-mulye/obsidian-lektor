@@ -55,6 +55,34 @@ const message: fc.Arbitrary<Message> = fc.oneof(
         model: ref,
         createdAt: fc.nat(),
         usage: fc.record({ inputTokens: fc.nat(), outputTokens: fc.nat() }, { requiredKeys: [] }),
+        steps: fc.array(
+          fc.record({
+            text,
+            calls: fc.array(
+              fc.record(
+                {
+                  id: fc.string(),
+                  name: fc.constantFrom('web_search', 'fetch_page'),
+                  arguments: fc.jsonValue(),
+                  result: fc.record(
+                    { ok: fc.boolean(), content: text, summary: fc.string(), limit: fc.boolean(), urls: fc.array(fc.webUrl(), { maxLength: 2 }) },
+                    { requiredKeys: ['ok', 'content', 'summary'] },
+                  ),
+                },
+                { requiredKeys: ['id', 'name', 'arguments'] },
+              ),
+              { maxLength: 3 },
+            ),
+          }),
+          { maxLength: 2 },
+        ),
+        approval: fc.record({ id: fc.string(), tool: fc.constant('fetch_page'), title: fc.string(), detail: fc.string() }),
+        context: fc.record({
+          notes: fc.array(fc.record({ path: fc.constantFrom('a.md', 'b.md', 'Private/c.md'), hash: fc.constant('h') }), { maxLength: 2 }),
+          selections: fc.constant([] as Array<{ path: string; hash: string }>),
+          backlinkLists: fc.nat({ max: 3 }),
+          excluded: fc.nat({ max: 3 }),
+        }),
       },
       { requiredKeys: ['id', 'role', 'content', 'reasoning', 'status', 'model', 'createdAt'] },
     )
@@ -113,7 +141,11 @@ const chat = (chatId: string): fc.Arbitrary<Chat> =>
 /** What a load gives back: mid-stream replies as stopped; selection text and "changed" marks never stored. */
 const normalised = (c: Chat): Chat => ({
   ...c,
-  messages: c.messages.map((m) => (m.role === 'assistant' && m.status === 'streaming' ? { ...m, status: 'stopped' } : m)),
+  messages: c.messages.map((m) => {
+    if (m.role !== 'assistant') return m;
+    const { approval: _a, ...rest } = m; // never saved
+    return rest.status === 'streaming' ? { ...rest, status: 'stopped' } : rest;
+  }),
   context: {
     ...c.context,
     chips: c.context.chips.map((x): Chip => {
@@ -214,6 +246,19 @@ describe('ChatHistory (INVARIANTS.md H1–H3)', () => {
         const file = storage.files.get('chats/a1')!;
         const kept = Object.values(c.sentContext ?? {}).some((v) => v.includes(SECRET));
         expect(file.includes(SECRET)).toBe(kept);
+      }),
+    );
+  });
+
+  it('H5: chatsSending finds exactly the chats whose replies sent the note', async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.uniqueArray(fc.constantFrom('a1', 'b2', 'c3', 'd4'), { maxLength: 4 }).chain((ids) => fc.tuple(...ids.map((id) => chat(id)))), fc.constantFrom('a.md', 'b.md', 'Private/c.md'), async (chats, path) => {
+        const storage = new MemStorage();
+        const history = new ChatHistory(storage);
+        for (const c of chats) await history.save(c);
+        storage.files.set('chats/zz9', '{broken');
+        const expected = chats.filter((c) => c.messages.some((m) => m.role === 'assistant' && m.context?.notes.some((n) => n.path === path))).map((c) => c.id).sort();
+        expect((await history.chatsSending(path)).sort()).toEqual(expected);
       }),
     );
   });

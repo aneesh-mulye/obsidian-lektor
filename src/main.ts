@@ -10,7 +10,12 @@ import type { ChatProvider } from './core/providers/types';
 import { SettingsStore } from './core/settings';
 import { confirm } from './obsidian/ConfirmModal';
 import { ContextBroker } from './obsidian/ContextBroker';
-import { FetchHttpClient } from './obsidian/Http';
+import { FetchHttpClient, RequestUrlHttpClient } from './obsidian/Http';
+import { readabilityExtractor } from './obsidian/HtmlExtractor';
+import { ToolRegistry } from './core/tools/registry';
+import { toolRuns } from './core/tools/run';
+import { searchProvider } from './core/tools/search';
+import { type SearchSetup, fetchPageTool, webSearchTool } from './core/tools/web';
 import { LektorView, VIEW_TYPE_LEKTOR } from './obsidian/LektorView';
 import { FolderPicker, NotePicker } from './obsidian/Pickers';
 import { PluginStorage } from './obsidian/PluginStorage';
@@ -42,11 +47,35 @@ export default class LektorPlugin extends Plugin {
       respectObsidian: () => settings().context.respectObsidianExclusions,
     });
 
+    // Tools (DESIGN.md § Tools framework). Keys are read from SecretStorage by name, only when a search runs.
+    const toolHttp = new RequestUrlHttpClient();
+    const searchSetup = (): SearchSetup | null => {
+      const t = settings().tools;
+      const provider = searchProvider(t.searchProvider);
+      if (!provider) return null;
+      const secretName = provider.id === 'tavily' || provider.id === 'exa' || provider.id === 'brave' ? t.secrets[provider.id] : '';
+      const key = secretName ? (this.app.secretStorage.getSecret(secretName) ?? '') : '';
+      return {
+        provider,
+        options: { count: t.resultCount, safe: t.safeSearch, region: t.region },
+        auth: { ...(key ? { key } : {}), ...(t.searxngUrl ? { baseUrl: t.searxngUrl } : {}) },
+      };
+    };
+    const registry = new ToolRegistry();
+    registry.register(webSearchTool(searchSetup, toolHttp));
+    registry.register(fetchPageTool(toolHttp, readabilityExtractor, () => settings().tools.fetchMaxTokens));
+    const tools = toolRuns(registry, {
+      enabledNames: () => [...(settings().tools.searchProvider !== 'none' ? ['web_search'] : []), 'fetch_page'],
+      limits: () => ({ searches: settings().tools.searchesPerMessage, fetches: settings().tools.fetchesPerMessage }),
+    });
+    const history = new ChatHistory(new PluginStorage(this.app, this.manifest.dir));
+
     this.chats = new ChatManager({
       providers: { get: (id) => byId.get(id) },
       clock: { now: () => Date.now() },
       newId: () => crypto.randomUUID(),
-      history: new ChatHistory(new PluginStorage(this.app, this.manifest.dir)),
+      history,
+      tools,
       defaultModel: () => settings().models.defaultModel ?? null,
       setDefaultModel: async (model) => {
         if (this.settingsStore.update({ models: { defaultModel: model } }).ok) await this.saveSettings();
@@ -74,6 +103,7 @@ export default class LektorPlugin extends Plugin {
         this.broker.refresh();
         context.renamed(from, to);
       },
+      (path) => void this.offerChatCleanup(history, path),
     );
     this.app.workspace.onLayoutReady(() => {
       this.broker.refresh();
@@ -141,7 +171,17 @@ export default class LektorPlugin extends Plugin {
       if (ok) await this.chats.clearAll();
     };
 
-    this.registerView(VIEW_TYPE_LEKTOR, (leaf) => new LektorView(leaf, { manager: this.chats, providers, clearAllChats, context: contextUi }));
+    this.registerView(
+      VIEW_TYPE_LEKTOR,
+      (leaf) =>
+        new LektorView(leaf, {
+          manager: this.chats,
+          providers,
+          clearAllChats,
+          context: contextUi,
+          searchConfigured: () => settings().tools.searchProvider !== 'none',
+        }),
+    );
     this.addRibbonIcon('message-square', 'Open Lektor', () => void this.activateView());
     this.addCommand({ id: 'open-sidebar', name: 'Open sidebar', callback: () => void this.activateView() });
     this.addCommand({
@@ -181,6 +221,32 @@ export default class LektorPlugin extends Plugin {
     this.broker.refresh();
     this.chats.context?.vaultChanged();
     this.chats.context?.settingsChanged();
+  }
+
+  /**
+   * A note was deleted. Replies may have quoted it, so offer to delete the chats that sent it
+   * (DESIGN.md § Decided since the first draft).
+   */
+  private async offerChatCleanup(history: ChatHistory, path: string): Promise<void> {
+    const ids = await history.chatsSending(path);
+    if (ids.length === 0) return;
+    const what = ids.length === 1 ? '1 chat' : `${ids.length} chats`;
+    const fragment = createFragment((f) => {
+      f.appendText(`Lektor: ${what} sent ${path} to a model, and its replies may quote it. `);
+      const button = f.createEl('button', { text: `Delete ${what}…` });
+      button.onclick = () => {
+        void confirm(this.app, {
+          title: `Delete ${what}?`,
+          body: `These chats sent ${path} to a model. Deleting them removes any quotes of it from Lektor's history.`,
+          action: 'Delete',
+        }).then(async (ok) => {
+          if (!ok) return;
+          for (const id of ids) await this.chats.delete(id);
+          new Notice(`Lektor: deleted ${what}.`);
+        });
+      };
+    });
+    new Notice(fragment, 20000);
   }
 
   /** For the settings tab's connection check. */

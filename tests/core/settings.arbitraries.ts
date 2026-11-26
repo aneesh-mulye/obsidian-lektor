@@ -58,7 +58,20 @@ export const validV2Settings = validV1Settings.chain((v1) =>
 
 export const contextLength = fc.oneof(fc.constantFrom(2048, 32768, 65536, 262144, 1048576), fc.integer({ min: 2048, max: 1048576 }));
 
-export const validSettings: fc.Arbitrary<Settings> = fc.record({
+const secretName = fc.oneof(fc.constant(''), fc.stringMatching(/^[a-z0-9-]{1,20}$/));
+export const toolSettings = fc.record({
+  searchesPerMessage: fc.integer({ min: 0, max: 50 }),
+  fetchesPerMessage: fc.integer({ min: 0, max: 50 }),
+  searchProvider: fc.constantFrom('none' as const, 'tavily' as const, 'exa' as const, 'brave' as const, 'searxng' as const, 'duckduckgo' as const),
+  resultCount: fc.integer({ min: 1, max: 20 }),
+  safeSearch: fc.constantFrom('off' as const, 'moderate' as const, 'strict' as const),
+  region: fc.stringMatching(/^[a-z-]{0,6}$/),
+  searxngUrl: fc.oneof(fc.constant(''), baseUrl),
+  fetchMaxTokens: fc.integer({ min: 500, max: 32000 }),
+  secrets: fc.record({ tavily: secretName, exa: secretName, brave: secretName }),
+});
+
+export const validV3Settings = fc.record({
   version: fc.constant(3 as const),
   models: fc.record({
     ollama: fc.record({ baseUrl, contextLength }),
@@ -77,6 +90,10 @@ export const validSettings: fc.Arbitrary<Settings> = fc.record({
   }),
   privacy: fc.record({ storeFullTranscripts: fc.boolean() }),
 });
+
+export const validSettings: fc.Arbitrary<Settings> = fc
+  .tuple(validV3Settings, toolSettings)
+  .map(([v3, tools]) => ({ ...v3, version: 4 as const, tools }));
 
 /** Non-exclusion leaves, each with a generator of values that must be rejected. */
 export const LEAVES: Record<string, fc.Arbitrary<unknown>> = {
@@ -121,6 +138,14 @@ export const LEAVES: Record<string, fc.Arbitrary<unknown>> = {
   ),
   'models.ollama.contextLength': fc.oneof(fc.integer({ max: 2047 }), fc.integer({ min: 1048577 }), fc.constant(4096.5), fc.constant('32768'), fc.constant(null)),
   'context.respectObsidianExclusions': fc.oneof(fc.constant('yes'), fc.constant(0), fc.constant(null)),
+  'tools.searchProvider': fc.oneof(fc.constant('google'), fc.constant('Tavily'), fc.constant(null)),
+  'tools.resultCount': fc.oneof(fc.constant(0), fc.integer({ min: 21 }), fc.constant(2.5)),
+  'tools.safeSearch': fc.oneof(fc.constant('on'), fc.constant(true)),
+  'tools.region': fc.oneof(fc.constant('us en'), fc.constant('x'.repeat(33)), fc.constant(3)),
+  'tools.searxngUrl': fc.oneof(fc.constant('searx.example'), fc.constant('http://h/'), fc.constant(null)),
+  'tools.fetchMaxTokens': fc.oneof(fc.constant(499), fc.constant(32001), fc.constant('4000')),
+  'tools.secrets': fc.oneof(fc.constant(null), fc.constant('key'), fc.constant([])),
+  'tools.secrets.tavily': fc.oneof(fc.constant(42), fc.constant('a\u0007b'), fc.constant('x'.repeat(129))),
   'models.defaultModel': fc.oneof(
     fc.constantFrom(
       { provider: 'Ollama', model: 'x' },
@@ -187,7 +212,7 @@ export const nearValid: fc.Arbitrary<unknown> = fc
   .tuple(
     validSettings,
     fc.subarray([...Object.keys(LEAVES), 'context.excludedFolders', 'version']),
-    fc.array(fc.anything(), { minLength: 18, maxLength: 18 }),
+    fc.array(fc.anything(), { minLength: 26, maxLength: 26 }),
     fc.subarray(['review', 'context', 'tools', 'privacy', 'models']),
     fc.subarray(['', 'review', 'context', 'tools', 'privacy', 'models']),
     fc.string(),
@@ -198,7 +223,7 @@ export const nearValid: fc.Arbitrary<unknown> = fc
     for (const where of extraIn) {
       const target = (where === '' ? raw : raw[where]) as Record<string, unknown>;
       target['autoApply'] = true;
-      target[`x-${extraKey}`] = values[17];
+      target[`x-${extraKey}`] = values[25];
     }
     for (const section of deleted) delete raw[section];
     return raw;

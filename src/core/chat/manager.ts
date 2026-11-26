@@ -9,7 +9,7 @@ import { type ContextDeps, ContextController } from './ContextController';
 import type { ModelRef } from '../providers/types';
 import type { ChatHistory, ChatSummary } from './history';
 import { ChatSession } from './session';
-import type { Chat, Clock, ProviderLookup } from './types';
+import type { Chat, Clock, ProviderLookup, ToolsDeps } from './types';
 
 export interface ManagerDeps {
   providers: ProviderLookup;
@@ -23,6 +23,8 @@ export interface ManagerDeps {
   context?: ContextDeps;
   /** Whether to keep the context text sent with each reply ("store full transcripts"). */
   storeFullTranscripts?: () => boolean;
+  /** Tools for each reply. */
+  tools?: ToolsDeps;
 }
 
 export interface ChatSnapshot {
@@ -118,6 +120,7 @@ export class ChatManager {
       onSaveError: (err) => this.deps.onError('Could not save the chat.', err),
       ...(this.deps.context ? { prepare: (state) => prepareContext(state, this.deps.context!.index) } : {}),
       ...(this.deps.storeFullTranscripts ? { storeFullTranscripts: this.deps.storeFullTranscripts } : {}),
+      ...(this.deps.tools ? { tools: this.deps.tools } : {}),
     });
     this.#unsubscribe();
     this.#unsubscribe = session.subscribe(() => this.#changed());

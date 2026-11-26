@@ -17,6 +17,7 @@ const enc = new TextEncoder();
 type ServerLine =
   | { kind: 'delta'; content?: string | undefined; thinking?: string | undefined }
   | { kind: 'empty-object' }
+  | { kind: 'toolcall'; name: string; args: unknown; id?: string | undefined }
   | { kind: 'error'; message: string }
   | { kind: 'bad-json'; text: string }
   | { kind: 'bad-shape' }
@@ -40,6 +41,8 @@ function serialise(l: ServerLine): string {
       return JSON.stringify({ model: 'm', message: { role: 'assistant', content: l.content ?? '', ...(l.thinking !== undefined ? { thinking: l.thinking } : {}) }, done: false });
     case 'empty-object':
       return '{}';
+    case 'toolcall':
+      return JSON.stringify({ message: { role: 'assistant', content: '', tool_calls: [{ ...(l.id !== undefined ? { id: l.id } : {}), function: { name: l.name, arguments: l.args } }] }, done: false });
     case 'error':
       return JSON.stringify({ error: l.message });
     case 'bad-json':
@@ -108,11 +111,14 @@ async function* once(b: Uint8Array): AsyncGenerator<Uint8Array> {
 // ---------------------------------------------------------------------------
 // Reference model
 
-type Shape = { type: 'text' | 'reasoning'; text: string } | { type: 'usage'; inputTokens?: number; outputTokens?: number } | { type: 'error' } | { type: 'done'; reason: string };
+type Shape =
+  | { type: 'text' | 'reasoning'; text: string }
+  | { type: 'tool_call'; call: { id: string; name: string; arguments: unknown } } | { type: 'usage'; inputTokens?: number; outputTokens?: number } | { type: 'error' } | { type: 'done'; reason: string };
 
 function expectedEvents(s: Script): Shape[] {
   if (s.showFails || s.requestThrows || s.status !== 200) return [{ type: 'error' }, { type: 'done', reason: 'error' }];
   const out: Shape[] = [];
+  let calls = 0;
   for (const l of s.lines) {
     switch (l.kind) {
       case 'delta':
@@ -121,6 +127,19 @@ function expectedEvents(s: Script): Shape[] {
         break;
       case 'empty-object':
         break;
+      case 'toolcall': {
+        if (l.id === undefined) calls += 1; // ids are generated only for calls that arrive without one
+        let args = l.args;
+        if (typeof args === 'string') {
+          try {
+            args = JSON.parse(args);
+          } catch {
+            /* passed on as a string */
+          }
+        }
+        out.push({ type: 'tool_call', call: { id: l.id ?? `call_${calls}`, name: l.name, arguments: args } });
+        break;
+      }
       case 'error':
       case 'bad-json':
       case 'bad-shape':
@@ -150,6 +169,18 @@ const text = fc.oneof(fc.string({ maxLength: 12 }), fc.constantFrom('日本', '�
 const serverLine: fc.Arbitrary<ServerLine> = fc.oneof(
   { weight: 10, arbitrary: fc.record({ kind: fc.constant('delta' as const), content: fc.option(text, { nil: undefined }), thinking: fc.option(text, { nil: undefined }) }, { requiredKeys: ['kind'] }) },
   { weight: 1, arbitrary: fc.constant({ kind: 'empty-object' as const }) },
+  {
+    weight: 2,
+    arbitrary: fc.record(
+      {
+        kind: fc.constant('toolcall' as const),
+        name: fc.constantFrom('web_search', 'fetch_page', 'x'),
+        args: fc.oneof(fc.jsonValue(), fc.constant('{"query":"a"}'), fc.constant('not json')),
+        id: fc.option(fc.constantFrom('call_a', 'call_b'), { nil: undefined }),
+      },
+      { requiredKeys: ['kind', 'name', 'args'] },
+    ),
+  },
   { weight: 1, arbitrary: fc.record({ kind: fc.constant('error' as const), message: fc.string({ minLength: 1 }) }) },
   { weight: 1, arbitrary: fc.record({ kind: fc.constant('bad-json' as const), text: fc.constantFrom('{', 'nope', '{"a":') }) },
   { weight: 1, arbitrary: fc.constant({ kind: 'bad-shape' as const }) },
@@ -167,7 +198,22 @@ const script: fc.Arbitrary<Script> = fc.record({
   showFails: fc.oneof({ weight: 12, arbitrary: fc.constant(false) }, { weight: 1, arbitrary: fc.constant(true) }),
 });
 
-const message: fc.Arbitrary<ChatMessage> = fc.record({ role: fc.constantFrom('user' as const, 'assistant' as const, 'system' as const), content: fc.string() });
+const call = fc.record({ id: fc.string({ minLength: 1 }), name: fc.constantFrom('web_search', 'fetch_page'), arguments: fc.jsonValue() });
+const message: fc.Arbitrary<ChatMessage> = fc.oneof(
+  fc.record({ role: fc.constantFrom('user' as const, 'assistant' as const, 'system' as const), content: fc.string() }),
+  fc.record({ role: fc.constant('assistant' as const), content: fc.string(), toolCalls: fc.array(call, { minLength: 1, maxLength: 3 }) }),
+  fc.record({ role: fc.constant('tool' as const), content: fc.string(), toolName: fc.constantFrom('web_search', 'fetch_page'), toolCallId: fc.string() }),
+);
+const tool = fc.record({ name: fc.constantFrom('web_search', 'fetch_page'), description: fc.string(), parameters: fc.constant({ type: 'object', properties: {} }) });
+
+/** O2's reference mapping to Ollama's message format. */
+function ollamaMessage(m: ChatMessage): unknown {
+  if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+    return { role: 'assistant', content: m.content, tool_calls: m.toolCalls.map((c) => ({ function: { name: c.name, arguments: c.arguments } })) };
+  }
+  if (m.role === 'tool') return { role: 'tool', content: m.content, tool_name: m.toolName };
+  return { role: m.role, content: m.content };
+}
 const baseUrl = fc.webUrl({ withQueryParameters: false, withFragments: false }).map((u) => u.replace(/\/+$/, ''));
 
 async function run(provider: OllamaProvider, messages: ChatMessage[], abortAfter: number | null) {
@@ -253,11 +299,11 @@ describe('OllamaProvider.stream (INVARIANTS.md O1)', () => {
 describe('OllamaProvider requests (INVARIANTS.md O2)', () => {
   it('O2: requests go only to the configured server and carry exactly the conversation', async () => {
     await fc.assert(
-      fc.asyncProperty(baseUrl, fc.string({ minLength: 1 }), fc.array(message, { maxLength: 6 }), fc.boolean(), fc.integer({ min: 2048, max: 1048576 }), async (base, model, messages, thinking, ctx) => {
+      fc.asyncProperty(baseUrl, fc.string({ minLength: 1 }), fc.array(message, { maxLength: 6 }), fc.boolean(), fc.integer({ min: 2048, max: 1048576 }), fc.array(tool, { maxLength: 2 }), async (base, model, messages, thinking, ctx, tools) => {
         const http = new FakeHttp({ status: 200, errorBody: '', lines: [{ kind: 'done' }], ending: 'close', offsets: [], requestThrows: false, thinking, showFails: false });
         const provider = new OllamaProvider(http, () => base, () => ctx);
         const input = structuredClone(messages);
-        for await (const _ of provider.stream({ model, messages }, new AbortController().signal)) { /* drain */ }
+        for await (const _ of provider.stream({ model, messages, tools }, new AbortController().signal)) { /* drain */ }
 
         expect(messages).toEqual(input); // not mutated
         for (const r of http.requests) {
@@ -269,7 +315,8 @@ describe('OllamaProvider requests (INVARIANTS.md O2)', () => {
         // The fake server reports a context length of 8192 for every model.
         expect(body).toEqual({
           model,
-          messages: input.map(({ role, content }) => ({ role, content })),
+          messages: input.map(ollamaMessage),
+          ...(tools.length > 0 ? { tools: tools.map((t) => ({ type: 'function', function: t })) } : {}),
           stream: true,
           options: { num_ctx: Math.min(ctx, 8192) },
           ...(thinking ? { think: true } : {}),

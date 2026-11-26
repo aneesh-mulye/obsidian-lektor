@@ -18,14 +18,31 @@ export interface ModelInfo {
   contextWindow?: number;
 }
 
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
-  content: string;
+/** A tool the model may call, in the shape every native tool API uses. */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  /** JSON Schema for the arguments. */
+  parameters: Record<string, unknown>;
 }
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  /** As the model sent it; validated by the tool registry before anything runs. */
+  arguments: unknown;
+}
+
+export type ChatMessage =
+  | { role: 'system' | 'user'; content: string }
+  | { role: 'assistant'; content: string; toolCalls?: ToolCall[] }
+  | { role: 'tool'; content: string; toolName: string; toolCallId: string };
 
 export interface ChatRequest {
   model: string;
   messages: ChatMessage[];
+  /** Tools offered for this request; absent or empty means none. */
+  tools?: ToolDefinition[];
 }
 
 export type DoneReason = 'stop' | 'length' | 'aborted' | 'error';
@@ -38,6 +55,7 @@ export type DoneReason = 'stop' | 'length' | 'aborted' | 'error';
 export type ChatEvent =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string }
+  | { type: 'tool_call'; call: ToolCall }
   | { type: 'usage'; inputTokens?: number; outputTokens?: number }
   | { type: 'error'; message: string }
   | { type: 'done'; reason: DoneReason };

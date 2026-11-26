@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 
 /** The effective exclusion list while the stored one is unreadable. */
 export const EXCLUDE_EVERYTHING: readonly string[] = Object.freeze(['**']);
@@ -22,6 +22,10 @@ export const MAX_EXCLUDED_PATTERNS = 1000;
 export const MAX_PATTERN_LENGTH = 1024;
 
 export const DISPLAY_MODES = ['prose', 'sidebar', 'inline'] as const;
+export const SEARCH_PROVIDERS = ['none', 'tavily', 'exa', 'brave', 'searxng', 'duckduckgo'] as const;
+export const SAFE_SEARCH = ['off', 'moderate', 'strict'] as const;
+export type SearchProviderId = (typeof SEARCH_PROVIDERS)[number];
+export type SafeSearch = (typeof SAFE_SEARCH)[number];
 export const ATTACHMENT_MODES = ['ask', 'allowed', 'upfront'] as const;
 export type DisplayMode = (typeof DISPLAY_MODES)[number];
 export type AttachmentMode = (typeof ATTACHMENT_MODES)[number];
@@ -64,6 +68,10 @@ export function normaliseBaseUrl(input: string): string | null {
   return url.href.replace(/\/+$/, '');
 }
 
+/** The name of a secret in Obsidian's SecretStorage ('' = none). */
+// eslint-disable-next-line no-control-regex -- control characters are exactly what we reject
+const SecretName = z.string().max(128).regex(/^[^\u0000-\u001f\u007f]*$/);
+
 const BaseUrl = z
   .string()
   .max(2048)
@@ -100,6 +108,17 @@ const SECTIONS = {
   tools: z.strictObject({
     searchesPerMessage: Cap,
     fetchesPerMessage: Cap,
+    /** No provider by default: no search traffic until the user picks one. */
+    searchProvider: z.enum(SEARCH_PROVIDERS),
+    resultCount: z.int().min(1).max(20),
+    safeSearch: z.enum(SAFE_SEARCH),
+    /** Region or language hint, passed to the provider as-is ('' = provider default). */
+    region: z.string().max(32).regex(/^[A-Za-z_-]*$/),
+    searxngUrl: z.union([z.literal(''), BaseUrl]),
+    /** Fetched pages are cut to this many (estimated) tokens. */
+    fetchMaxTokens: z.int().min(500).max(32000),
+    /** Names of Obsidian secrets holding API keys (never the keys themselves). */
+    secrets: z.strictObject({ tavily: SecretName, exa: SecretName, brave: SecretName }),
   }),
   privacy: z.strictObject({
     storeFullTranscripts: z.boolean(),
@@ -129,7 +148,17 @@ export const DEFAULT_SETTINGS: Settings = deepFreeze({
   models: { ollama: { baseUrl: 'http://127.0.0.1:11434', contextLength: 32768 }, defaultModel: null },
   review: { defaultDisplayMode: 'sidebar' },
   context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3, respectObsidianExclusions: true },
-  tools: { searchesPerMessage: 5, fetchesPerMessage: 5 },
+  tools: {
+    searchesPerMessage: 5,
+    fetchesPerMessage: 5,
+    searchProvider: 'none',
+    resultCount: 5,
+    safeSearch: 'moderate',
+    region: '',
+    searxngUrl: '',
+    fetchMaxTokens: 4000,
+    secrets: { tavily: '', exa: '', brave: '' },
+  },
   privacy: { storeFullTranscripts: false },
 });
 
@@ -153,6 +182,18 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
     }
     if (Object.hasOwn(raw, 'context')) {
       out['context'] = addMissing(raw['context'], 'respectObsidianExclusions', DEFAULT_SETTINGS.context.respectObsidianExclusions);
+    }
+    return out;
+  },
+  // 3 → 4: search provider, result count, safe search, region, SearXNG URL, fetch size and key names.
+  3: (raw) => {
+    const out: Record<string, unknown> = { ...raw, version: 4 };
+    if (Object.hasOwn(raw, 'tools')) {
+      let tools = raw['tools'];
+      for (const key of ['searchProvider', 'resultCount', 'safeSearch', 'region', 'searxngUrl', 'fetchMaxTokens', 'secrets'] as const) {
+        tools = addMissing(tools, key, clone(DEFAULT_SETTINGS.tools[key]));
+      }
+      out['tools'] = tools;
     }
     return out;
   },

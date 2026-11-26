@@ -12,6 +12,7 @@ import type { ContextIndex } from './ContextIndex';
 import { renderContext } from './render';
 import type { Change, Chip, ContextState } from './state';
 import { MESSAGE_OVERHEAD, estimateTokens } from './tokens';
+import { extractUrls } from '../tools/urls';
 
 export interface ContextManifest {
   notes: Array<{ path: string; hash: string }>;
@@ -28,6 +29,8 @@ export interface PreparedContext {
   /** Estimated tokens of the message. */
   tokens: number;
   manifest: ContextManifest;
+  /** http(s) URLs written in the attached notes and selections (known to fetch_page). */
+  urls: string[];
 }
 
 export async function sha256(text: string): Promise<string> {
@@ -47,6 +50,7 @@ export async function prepareContext(state: ContextState, index: ContextIndex): 
       backlinkLists: assembled.backlinkLists.filter((l) => l.total > 0).length,
       excluded: assembled.excluded,
     },
+    urls: [...assembled.notes.map((n) => n.content), ...assembled.selections.map((sel) => sel.text)].flatMap(extractUrls),
   };
 }
 

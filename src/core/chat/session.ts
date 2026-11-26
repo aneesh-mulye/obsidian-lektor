@@ -10,9 +10,13 @@
 import { type ContextManifest, type PreparedContext, recordSent, sha256 } from '../context/prepare';
 import type { ContextState } from '../context/state';
 import { MESSAGE_OVERHEAD, estimateTokens, fits, formatTokens } from '../context/tokens';
-import type { ChatEvent, ChatMessage, ModelRef } from '../providers/types';
-import { titleFrom, toRequestMessages } from './transcript';
-import type { AssistantMessage, Chat, Clock, Message, ProviderLookup } from './types';
+import type { ChatMessage, ChatProvider, ChatRequest, ModelRef, ToolCall } from '../providers/types';
+import type { ApprovalRequest } from '../tools/types';
+import { messagesTokens, roundMessages, titleFrom, toRequestMessages } from './transcript';
+import type { AssistantMessage, Chat, Clock, Message, ProviderLookup, ToolsDeps } from './types';
+
+/** The tool loop's limit: at most this many requests per reply; the last offers no tools (INVARIANTS.md C7). */
+export const MAX_TOOL_ROUNDS = 8;
 
 export interface SessionDeps {
   providers: ProviderLookup;
@@ -25,6 +29,8 @@ export interface SessionDeps {
   prepare?: (state: ContextState) => Promise<PreparedContext>;
   /** Whether to keep the context text sent with each reply ("store full transcripts"). */
   storeFullTranscripts?: () => boolean;
+  /** Tools for each reply (DESIGN.md § Tools framework). */
+  tools?: ToolsDeps;
 }
 
 /** Calibration is the ratio of real to estimated prompt tokens, kept between 1 and 4. */
@@ -39,6 +45,7 @@ export class ChatSession {
   #saving: Promise<void> = Promise.resolve();
   /** Real ÷ estimated prompt tokens from the last finished reply (INVARIANTS.md C6). */
   #calibration = 1;
+  #approval: { id: string; resolve: (approved: boolean) => void } | null = null;
   readonly #listeners = new Set<() => void>();
 
   constructor(
@@ -83,7 +90,14 @@ export class ChatSession {
     this.#run += 1;
     this.#controller?.abort();
     this.#controller = null;
-    this.#updateReply((r) => (r.status === 'streaming' ? { ...r, status: 'stopped' } : r));
+    // A waiting approval is declined.
+    const pending = this.#approval;
+    this.#approval = null;
+    pending?.resolve(false);
+    this.#updateReply((r) => {
+      const { approval: _a, ...rest } = r;
+      return r.status === 'streaming' ? { ...rest, status: 'stopped' } : rest;
+    });
     this.#busy = false;
     this.#emit();
     this.#persist();
@@ -133,8 +147,6 @@ export class ChatSession {
 
   async #pump(run: number, model: ModelRef | null, history: readonly Message[], signal: AbortSignal): Promise<void> {
     const live = () => run === this.#run && this.#busy;
-    let iterator: AsyncIterator<ChatEvent> | undefined;
-    let pendingError: string | undefined;
     try {
       if (!model) throw new Error('Pick a model first.');
       const provider = this.deps.providers.get(model.provider);
@@ -148,22 +160,68 @@ export class ChatSession {
       if (!live()) return;
 
       const transcript = toRequestMessages(history);
-      const estimate = (prepared?.tokens ?? 0) + transcript.reduce((t, m) => t + estimateTokens(m.content) + MESSAGE_OVERHEAD, 0);
-      if (!fits(estimate, this.#calibration, window)) {
-        this.#end('error', tooLong(Math.ceil(estimate * this.#calibration), window));
-        return;
-      }
-      const messages: ChatMessage[] = prepared?.message ? [{ role: 'system', content: prepared.message }, ...transcript] : transcript;
-      await this.#recordContext(prepared, estimate);
-      if (!live()) return;
+      const base: ChatMessage[] = prepared?.message ? [{ role: 'system', content: prepared.message }, ...transcript] : transcript;
+      const baseEstimate = (prepared?.tokens ?? 0) + messagesTokens(transcript, estimateTokens, MESSAGE_OVERHEAD);
+      // One tool run (one budget) per user message (INVARIANTS.md T2).
+      const tools = this.deps.tools?.forReply({ chat: this.#chat, capabilities: caps, contextUrls: prepared?.urls ?? [] }) ?? null;
 
-      iterator = provider.stream({ model: model.model, messages }, signal)[Symbol.asyncIterator]();
+      for (let round = 0; ; round++) {
+        const rounds = this.#reply()?.steps ?? [];
+        const extra = roundMessages(rounds);
+        const estimate = baseEstimate + messagesTokens(extra, estimateTokens, MESSAGE_OVERHEAD);
+        // Every round must fit (INVARIANTS.md C6, C7).
+        if (!fits(estimate, this.#calibration, window)) {
+          this.#end('error', tooLong(Math.ceil(estimate * this.#calibration), window));
+          return;
+        }
+        if (round === 0) await this.#recordContext(prepared, estimate);
+        else this.#updateReply((r) => ({ ...r, promptEstimate: estimate }));
+        if (!live()) return;
+
+        // The last round offers no tools, so the loop always ends with an answer.
+        const offered = tools !== null && round < MAX_TOOL_ROUNDS - 1 ? tools.definitions : undefined;
+        const calls = await this.#streamRound(provider, { model: model.model, messages: [...base, ...extra], ...(offered ? { tools: offered } : {}) }, signal, live, window);
+        if (calls === null || !live()) return;
+
+        // A tool round: keep what the model said with its calls, then run them in order.
+        const index = rounds.length;
+        this.#updateReply((r) => ({
+          ...r,
+          content: '',
+          steps: [...rounds, { text: r.content, calls: calls.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })) }],
+        }));
+        this.#emit();
+        for (let i = 0; i < calls.length; i++) {
+          const result = await tools!.execute(calls[i]!, signal, (request) => this.#askApproval(request));
+          if (!live()) return;
+          this.#updateReply((r) => ({
+            ...r,
+            steps: r.steps!.map((st, k) => (k !== index ? st : { ...st, calls: st.calls.map((c, j) => (j === i ? { ...c, result } : c)) })),
+          }));
+          this.#emit();
+        }
+        this.#persist();
+      }
+    } catch (err) {
+      if (live()) this.#end('error', err instanceof Error && err.message ? err.message : 'The reply failed.');
+    }
+  }
+
+  /**
+   * Stream one request. Returns the tool calls if the round ended in some (and tools were offered);
+   * otherwise ends the reply and returns null.
+   */
+  async #streamRound(provider: ChatProvider, req: ChatRequest, signal: AbortSignal, live: () => boolean, window: number): Promise<ToolCall[] | null> {
+    const iterator = provider.stream(req, signal)[Symbol.asyncIterator]();
+    const calls: ToolCall[] = [];
+    let pendingError: string | undefined;
+    try {
       for (;;) {
         const step = await iterator.next();
-        if (!live()) return;
+        if (!live()) return null;
         if (step.done) {
           this.#end('error', pendingError ?? 'The reply ended before it finished.');
-          return;
+          return null;
         }
         const event = step.value;
         switch (event.type) {
@@ -172,6 +230,9 @@ export class ChatSession {
             break;
           case 'reasoning':
             this.#updateReply((r) => ({ ...r, reasoning: r.reasoning + event.text }));
+            break;
+          case 'tool_call':
+            if (req.tools) calls.push(event.call); // never act on a call to tools that were not offered
             break;
           case 'usage':
             this.#updateReply((r) => ({
@@ -186,25 +247,61 @@ export class ChatSession {
             pendingError = event.message;
             break;
           case 'done':
+            if ((event.reason === 'stop' || event.reason === 'length') && calls.length > 0) return calls;
             if (event.reason === 'stop' || event.reason === 'length') this.#calibrate(window);
             if (event.reason === 'stop') this.#end('complete');
             else if (event.reason === 'length') this.#end('truncated');
             else if (event.reason === 'aborted') this.#end('stopped');
             else this.#end('error', pendingError ?? 'The reply failed.');
-            return;
+            return null;
         }
         this.#emit();
       }
-    } catch (err) {
-      if (live()) this.#end('error', err instanceof Error && err.message ? err.message : 'The reply failed.');
     } finally {
       // The stream is finished or abandoned; let it clean up, but never wait on it.
       try {
-        void iterator?.return?.();
+        void iterator.return?.();
       } catch {
         // ignore
       }
     }
+  }
+
+  /** Show an approval card on the reply and wait for the user (or Stop, which declines). */
+  #askApproval(request: ApprovalRequest): Promise<boolean> {
+    return new Promise((resolve) => {
+      const id = this.deps.newId();
+      this.#approval?.resolve(false);
+      this.#approval = { id, resolve };
+      this.#updateReply((r) => ({ ...r, approval: { id, ...request } }));
+      this.#emit();
+    });
+  }
+
+  /** The user answered an approval card. */
+  answerApproval(id: string, approved: boolean): void {
+    const pending = this.#approval;
+    if (pending?.id !== id) return;
+    this.#approval = null;
+    this.#updateReply((r) => {
+      const { approval: _a, ...rest } = r;
+      return rest;
+    });
+    this.#emit();
+    pending.resolve(approved);
+  }
+
+  /** Turn the tools (the globe) on or off for this chat. */
+  setTools(on: boolean): void {
+    const { toolsDisabled: _t, ...rest } = this.#chat;
+    this.#set(on ? rest : { ...rest, toolsDisabled: true });
+    this.#emit();
+    if (this.#chat.messages.length > 0) this.#persist();
+  }
+
+  #reply(): AssistantMessage | undefined {
+    const last = this.#chat.messages.at(-1);
+    return last?.role === 'assistant' ? last : undefined;
   }
 
   /** Note on the reply what it was sent with; with full transcripts on, keep the text too. */

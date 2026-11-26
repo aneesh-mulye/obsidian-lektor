@@ -1,8 +1,25 @@
 // SPDX-FileCopyrightText: 2026 Aneesh Mulye
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { type App, Notice, type Plugin, PluginSettingTab, Setting } from 'obsidian';
-import { type AttachmentMode, type DisplayMode, type SettingsPatch, type SettingsStore, normaliseBaseUrl } from '../core/settings';
+import { type App, Notice, type Plugin, PluginSettingTab, SecretComponent, Setting } from 'obsidian';
+import {
+  type AttachmentMode,
+  type DisplayMode,
+  type SafeSearch,
+  type SearchProviderId,
+  type SettingsPatch,
+  type SettingsStore,
+  normaliseBaseUrl,
+} from '../core/settings';
+
+const PROVIDER_LABELS: Record<SearchProviderId, string> = {
+  none: 'None',
+  tavily: 'Tavily',
+  exa: 'Exa',
+  brave: 'Brave Search',
+  searxng: 'SearXNG',
+  duckduckgo: 'DuckDuckGo (no key)',
+};
 
 export interface SettingsHost extends Plugin {
   settingsStore: SettingsStore;
@@ -152,6 +169,91 @@ export class LektorSettingTab extends PluginSettingTab {
     // Tools
     new Setting(containerEl).setName('Tools').setHeading();
 
+    const t = s.tools;
+    new Setting(containerEl)
+      .setName('Web search provider')
+      .setDesc('Where web_search sends queries. None means no search traffic at all; models can still fetch pages you mention.')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOptions(PROVIDER_LABELS)
+          .setValue(t.searchProvider)
+          .onChange((value) => void this.apply({ tools: { searchProvider: value as SearchProviderId } }).then(() => this.display())),
+      );
+
+    if (t.searchProvider === 'tavily' || t.searchProvider === 'exa' || t.searchProvider === 'brave') {
+      const id = t.searchProvider;
+      new Setting(containerEl)
+        .setName(`${PROVIDER_LABELS[id]} API key`)
+        .setDesc("Kept in Obsidian's secret storage; Lektor's settings store only the secret's name.")
+        .addComponent((el) =>
+          new SecretComponent(this.app, el)
+            .setValue(t.secrets[id])
+            .onChange((value) => void this.apply({ tools: { secrets: { ...this.host.settingsStore.settings.tools.secrets, [id]: value ?? '' } } })),
+        );
+    }
+
+    if (t.searchProvider === 'searxng') {
+      let searxDraft = t.searxngUrl;
+      new Setting(containerEl)
+        .setName('SearXNG address')
+        .setDesc('Your SearXNG server. It must allow JSON results ("json" in search.formats).')
+        .addText((text) =>
+          text
+            .setPlaceholder('https://searx.example')
+            .setValue(searxDraft)
+            .onChange((value) => {
+              searxDraft = value;
+            }),
+        )
+        .addButton((button) =>
+          button.setButtonText('Save').onClick(() => {
+            const url = searxDraft.trim() === '' ? '' : normaliseBaseUrl(searxDraft);
+            if (url === null) new Notice('Lektor: enter an http:// or https:// address.');
+            else void this.apply({ tools: { searxngUrl: url } }).then(() => this.display());
+          }),
+        );
+    }
+
+    if (t.searchProvider !== 'none') {
+      new Setting(containerEl)
+        .setName('Results per search')
+        .addSlider((slider) =>
+          slider
+            .setLimits(1, 20, 1)
+            .setValue(t.resultCount)
+            .setDynamicTooltip()
+            .onChange((value) => void this.apply({ tools: { resultCount: value } })),
+        );
+      new Setting(containerEl).setName('Safe search').addDropdown((dropdown) =>
+        dropdown
+          .addOptions({ off: 'Off', moderate: 'Moderate', strict: 'Strict' })
+          .setValue(t.safeSearch)
+          .onChange((value) => void this.apply({ tools: { safeSearch: value as SafeSearch } })),
+      );
+      new Setting(containerEl)
+        .setName('Region')
+        .setDesc('Passed to the provider as-is, e.g. "us" or "de" (Brave, Exa), "de-de" (DuckDuckGo), "en" (SearXNG). Leave empty for the default.')
+        .addText((text) =>
+          text
+            .setPlaceholder('')
+            .setValue(t.region)
+            .onChange((value) => void this.apply({ tools: { region: value.trim() } }, false)),
+        );
+    }
+
+    new Setting(containerEl)
+      .setName('Page size limit')
+      .setDesc('Fetched pages are cut to about this many tokens before the model sees them.')
+      .addText((text) => {
+        text.inputEl.type = 'number';
+        text
+          .setValue(String(t.fetchMaxTokens))
+          .onChange((value) => {
+            const n = Number(value);
+            if (Number.isInteger(n) && n >= 500 && n <= 32000) void this.apply({ tools: { fetchMaxTokens: n } }, false);
+          });
+      });
+
     new Setting(containerEl)
       .setName('Searches per message')
       .setDesc('The most web searches a model may run for one message.')
@@ -192,7 +294,11 @@ export class LektorSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Store full transcripts')
-      .setDesc('Chat history normally records which notes were in context, not their contents. Turn this on to keep the full text of every chat.')
+      .setDesc(
+        'Chat history records which notes were sent (paths and fingerprints), not their text. Turn this on to also keep the context text sent with each reply. ' +
+          "Either way, your messages, the model's replies and its thinking are kept, and replies may quote your notes. " +
+          'When you delete a note, Lektor offers to delete the chats that sent it.',
+      )
       .addToggle((toggle) =>
         toggle
           .setValue(s.privacy.storeFullTranscripts)

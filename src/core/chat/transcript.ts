@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type { ChatMessage } from '../providers/types';
-import type { Message } from './types';
+import type { Message, ToolRound } from './types';
 
 /**
  * What the model is sent for a transcript (INVARIANTS.md C1): user messages,
@@ -12,11 +12,38 @@ import type { Message } from './types';
 export function toRequestMessages(messages: readonly Message[]): ChatMessage[] {
   return messages.flatMap((m): ChatMessage[] => {
     if (m.role === 'user') return [{ role: 'user', content: m.content }];
-    if (m.content !== '' && (m.status === 'complete' || m.status === 'stopped' || m.status === 'truncated')) {
-      return [{ role: 'assistant', content: m.content }];
-    }
-    return [];
+    if (m.status !== 'complete' && m.status !== 'stopped' && m.status !== 'truncated') return [];
+    const out = roundMessages(m.steps ?? []);
+    if (m.content !== '') out.push({ role: 'assistant', content: m.content });
+    return out;
   });
+}
+
+/**
+ * Tool rounds as the model saw them (INVARIANTS.md C7): each round's text with
+ * the calls that finished, then one tool message per finished call. Calls
+ * that never got a result (the user stopped) are left out.
+ */
+export function roundMessages(rounds: readonly ToolRound[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (const round of rounds) {
+    const done = round.calls.filter((c) => c.result !== undefined);
+    if (done.length === 0) {
+      if (round.text !== '') out.push({ role: 'assistant', content: round.text });
+      continue;
+    }
+    out.push({ role: 'assistant', content: round.text, toolCalls: done.map((c) => ({ id: c.id, name: c.name, arguments: c.arguments })) });
+    for (const c of done) out.push({ role: 'tool', content: c.result!.content, toolName: c.name, toolCallId: c.id });
+  }
+  return out;
+}
+
+/** Estimated tokens of a list of request messages. */
+export function messagesTokens(messages: readonly ChatMessage[], estimate: (s: string) => number, overhead: number): number {
+  return messages.reduce((t, m) => {
+    const calls = m.role === 'assistant' && m.toolCalls ? estimate(JSON.stringify(m.toolCalls)) : 0;
+    return t + estimate(m.content) + calls + overhead;
+  }, 0);
 }
 
 /** A chat title from its first message: first line, at most 50 characters, cut at a word. */

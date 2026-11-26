@@ -3,7 +3,8 @@
 
 import type { ContextManifest } from '../context/prepare';
 import type { ContextState } from '../context/state';
-import type { ChatProvider, ModelRef } from '../providers/types';
+import type { Capabilities, ChatProvider, ModelRef, ToolCall, ToolDefinition } from '../providers/types';
+import type { ApprovalRequest, StepResult } from '../tools/types';
 
 export type ReplyStatus = 'streaming' | 'complete' | 'stopped' | 'truncated' | 'error';
 
@@ -12,6 +13,20 @@ export interface UserMessage {
   readonly role: 'user';
   readonly content: string;
   readonly createdAt: number;
+}
+
+/** One tool call within a reply, and its result once it has run. */
+export interface ToolStep {
+  readonly id: string;
+  readonly name: string;
+  readonly arguments: unknown;
+  readonly result?: StepResult;
+}
+
+/** A round of the tool loop: what the model said, then the tools it called. */
+export interface ToolRound {
+  readonly text: string;
+  readonly calls: readonly ToolStep[];
 }
 
 export interface AssistantMessage {
@@ -32,6 +47,10 @@ export interface AssistantMessage {
   readonly contextHash?: string;
   /** Something the user should know about this reply (e.g. the context was full). */
   readonly notice?: string;
+  /** Tool rounds before the final answer (`content`). */
+  readonly steps?: readonly ToolRound[];
+  /** An approval the reply is waiting for (never saved). */
+  readonly approval?: { readonly id: string } & ApprovalRequest;
 }
 
 export type Message = UserMessage | AssistantMessage;
@@ -47,6 +66,19 @@ export interface Chat {
   readonly context: ContextState;
   /** Context text actually sent, by hash. Only kept with "store full transcripts" on. */
   readonly sentContext?: Readonly<Record<string, string>>;
+  /** The per-chat tools switch (the globe); tools are on unless this is true. */
+  readonly toolsDisabled?: boolean;
+}
+
+/** The tools available to one reply: definitions to offer, and a way to run calls. One per user message. */
+export interface ToolRun {
+  definitions: ToolDefinition[];
+  execute(call: ToolCall, signal: AbortSignal, approve: (request: ApprovalRequest) => Promise<boolean>): Promise<StepResult>;
+}
+
+export interface ToolsDeps {
+  /** Null when this chat or model gets no tools. */
+  forReply(input: { chat: Chat; capabilities: Capabilities; contextUrls: readonly string[] }): ToolRun | null;
 }
 
 export interface Clock {
