@@ -45,6 +45,7 @@ Every design choice below serves two rules, and the code must make breaking them
 
 - **One gate for vault reads.** All note and attachment content reaches a model through a single `ContextBroker`. No provider, tool or preset imports Obsidian's `Vault` API directly. A lint rule (ESLint `no-restricted-imports`) fails the build if they do.
 - **One gate for vault writes.** Only the `ReviewController` may call `vault.modify` / `editor.replaceRange`, and only from an accept action fired by a user click. Models never get a write tool; they return *proposals*.
+- **One narrow gate for Lektor's own data.** `PluginStorage` may read and write chats and the AI edit log under the plugin folder, and nothing else: every adapter call it makes must take a path from `resolveStoragePath` / `resolveStorageDir` (in `src/core/storage.ts`), which accept only `<config dir>/plugins/<folder>/<chats|history>/<lowercase key>`. A lint rule enforces the call shape; property tests check that the resolver never produces another path and that `PluginStorage` never touches anything outside it.
 - **Excluded folders** are filtered inside `ContextBroker`, so no path around it exists.
 - **CLI bridges run blind.** Claude Code and Codex start in an empty, plugin-owned working folder with every file and shell tool disabled. A startup self-test proves this before each session (see Testing).
 - **Tools are allow-listed per session.** A model can only call tools registered and enabled for the current chat; tool calls that would read the vault go through `ContextBroker` and its approval prompt like any other request.
@@ -368,7 +369,7 @@ Run 1,000 cases per property in CI and 100 locally; a failing seed becomes a reg
 
 **Static checks**
 
-- ESLint `no-restricted-imports` / `no-restricted-properties`: only `ContextBroker` may use `app.vault.read*` / `cachedRead` / `adapter.read`, and only `ReviewController` may use `vault.modify`, `vault.create`, `editor.replaceRange`.
+- ESLint `no-restricted-imports` / `no-restricted-syntax`: only `ContextBroker` may use `app.vault.read*` / `cachedRead` / `adapter.read` on notes, and only `ReviewController` may use `vault.modify`, `vault.create`, `editor.replaceRange`. The one exception is `PluginStorage`, which may call a fixed set of adapter methods only with resolver-built paths inside the plugin folder (see "How they are enforced"). The exact rules are in `eslint/gates.mjs` and `INVARIANTS.md` (G1–G6).
 
 **Manual test vault.** A fixtures vault in the repo with an excluded folder, attachments, link chains to depth 3, and sample texts seeded with typos, garden-path sentences and wrong facts, used for preset checks against each backend.
 

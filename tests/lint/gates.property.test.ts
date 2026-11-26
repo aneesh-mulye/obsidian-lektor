@@ -23,8 +23,9 @@ interface Snippet {
 
 const BROKER: Category = 'context-broker';
 const REVIEW: Category = 'review-controller';
+const STORAGE: Category = 'plugin-storage';
 const NOWHERE: readonly Category[] = [];
-const NOT_CORE: readonly Category[] = ['obsidian', BROKER, REVIEW];
+const NOT_CORE: readonly Category[] = ['obsidian', BROKER, REVIEW, STORAGE];
 const allBut = (...cs: Category[]) => ALL.filter((c) => !cs.includes(c));
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,8 @@ function pathIn(category: Category): fc.Arbitrary<string> {
       return fc.constant('src/obsidian/ContextBroker.ts');
     case 'review-controller':
       return fc.constant('src/obsidian/ReviewController.ts');
+    case 'plugin-storage':
+      return fc.constant('src/obsidian/PluginStorage.ts');
     case 'cli':
       return under('src/core/cli');
     case 'core':
@@ -58,6 +61,8 @@ function pathIn(category: Category): fc.Arbitrary<string> {
           'src/obsidian/ReviewController.tsx',
           'src/obsidian/ui/ContextBroker.ts',
           'src/obsidian/review/ReviewController.ts',
+          'src/obsidian/PluginStorage.tsx',
+          'src/obsidian/storage/PluginStorage.ts',
           'src/ContextBroker.ts',
           'src/obsidian/contextbroker.ts',
           'src/main.ts',
@@ -246,6 +251,67 @@ const g4: fc.Arbitrary<Snippet> = fc.constantFrom(...FS_MODULES).chain((mod) =>
   ),
 );
 
+// G6: PluginStorage reaches only resolved paths in its own folder.
+const g6: fc.Arbitrary<Snippet> = fc
+  .tuple(
+    fc.constantFrom('this.app', 'app', 'this.deps.app'),
+    fc.constantFrom("resolveStoragePath(this.root, 'chats', key)", "resolveStoragePath(root, ns, k)"),
+    fc.constantFrom("resolveStorageDir(this.root, 'history')", 'resolveStorageDir(root, ns)'),
+  )
+  .chain(([app, file, dir]) =>
+    fc.constantFrom<Snippet>(
+      // The allowed shape.
+      { code: `void ${app}.vault.adapter.read(${file});`, allowed: [BROKER, STORAGE] },
+      { code: `void ${app}.vault.adapter.exists(${file});`, allowed: [BROKER, STORAGE] },
+      { code: `void ${app}.vault.adapter.list(${dir});`, allowed: [BROKER, STORAGE] },
+      { code: `void ${app}.vault.adapter.write(${file}, data);`, allowed: [STORAGE] },
+      { code: `void ${app}.vault.adapter.append(${file}, data);`, allowed: [STORAGE] },
+      { code: `void ${app}.vault.adapter.remove(${file});`, allowed: [STORAGE] },
+      { code: `void ${app}.vault.adapter.mkdir(${dir});`, allowed: [STORAGE] },
+      { code: `void ${app}.vault?.adapter.read(${file});`, allowed: [BROKER, STORAGE] },
+      // Unresolved paths.
+      { code: `void ${app}.vault.adapter.read(path);`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter.read('.obsidian/plugins/lektor/chats/a.json');`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter.read(\`\${root}/chats/\${k}.json\`);`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter.read(join(${dir}, k));`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter.read(this.resolveStoragePath(root, ns, k));`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter.write(path, data);`, allowed: NOWHERE },
+      { code: `void ${app}.vault.adapter.read();`, allowed: [BROKER] },
+      // Methods that are not allow-listed.
+      { code: `void ${app}.vault.adapter.getFullPath(${file});`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter.readBinary(${file});`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter.stat(${file});`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter.rename(${file}, ${file});`, allowed: NOWHERE },
+      { code: `void ${app}.vault.adapter.rmdir(${dir}, true);`, allowed: NOWHERE },
+      { code: `void ${app}.vault.adapter.process(${file}, (s: string) => s);`, allowed: NOWHERE },
+      // Computed access and aliasing.
+      { code: `void ${app}.vault['adapter'].read(${file});`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter['read'](${file});`, allowed: [BROKER] },
+      { code: `const a = ${app}.vault.adapter; void a.read(${file});`, allowed: [BROKER] },
+      { code: `const { adapter } = ${app}.vault; void adapter.read(${file});`, allowed: [BROKER] },
+      { code: `const read = ${app}.vault.adapter.read; void read(${file});`, allowed: [BROKER] },
+      { code: `void ${app}.vault.adapter.read.call(null, ${file});`, allowed: [BROKER] },
+      // Other vault members.
+      { code: `void ${app}.vault.getMarkdownFiles();`, allowed: [BROKER, REVIEW] },
+      { code: `void ${app}.vault.configDir;`, allowed: [BROKER, REVIEW] },
+      { code: `const v = ${app}.vault;`, allowed: [BROKER, REVIEW] },
+    ),
+  );
+
+// G6: the resolver cannot be faked inside PluginStorage.
+const g6Resolver: fc.Arbitrary<Snippet> = fc.constantFrom('resolveStoragePath', 'resolveStorageDir').chain((name) =>
+  fc.constantFrom<Snippet>(
+    { code: `import { ${name} } from '../core/storage';`, allowed: ALL },
+    { code: `import { type StorageNamespace, ${name} } from '../core/storage';`, allowed: ALL },
+    { code: `import { ${name} } from './fake';`, allowed: allBut(STORAGE) },
+    { code: `import { ${name} } from '../core/storage-but-not';`, allowed: allBut(STORAGE) },
+    { code: `import { identity as ${name} } from '../core/storage';`, allowed: allBut(STORAGE) },
+    { code: `function ${name}(p: string) { return p; }`, allowed: allBut(STORAGE) },
+    { code: `const ${name} = (p: string) => p;`, allowed: allBut(STORAGE) },
+    { code: `class ${name} {}`, allowed: allBut(STORAGE) },
+  ),
+);
+
 // Banned everywhere.
 const evalForms: fc.Arbitrary<Snippet> = fc.constantFrom<Snippet>(
   { code: "eval('x');", allowed: NOWHERE },
@@ -296,6 +362,10 @@ describe('lint gates (INVARIANTS.md G1–G4)', () => {
     await fc.assert(fc.asyncProperty(placed(g4), holds));
   });
 
+  it('G6: PluginStorage reaches only resolved paths in its own folder', async () => {
+    await fc.assert(fc.asyncProperty(placed(fc.oneof(g6, g6Resolver)), holds));
+  });
+
   it('eval and friends are banned everywhere', async () => {
     await fc.assert(fc.asyncProperty(placed(evalForms), holds));
   });
@@ -305,7 +375,7 @@ describe('lint gates (INVARIANTS.md G1–G4)', () => {
   });
 
   it('one forbidden line cannot be masked by others in the same file', async () => {
-    const any = fc.oneof(g1, g2, g3, g4, evalForms, benign);
+    const any = fc.oneof(g1, g2, g3, g4, g6, g6Resolver, evalForms, benign);
     const files = fc.array(any, { minLength: 1, maxLength: 5 }).chain((snippets) => {
       const applicable = ALL.filter((c) => snippets.every((s) => (s.applicable ?? ALL).includes(c)));
       if (applicable.length === 0) return fc.constant(null);

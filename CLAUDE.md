@@ -9,7 +9,7 @@ Lektor is an Obsidian plugin: a sidebar LLM chat that sees only the context the 
 ## The two hard rules (never break these)
 
 1. **No write without approval.** Nothing in the vault changes unless the user accepts a specific hunk. Only `ReviewController` may write (`vault.modify`, `vault.create`, `editor.replaceRange`), and only from a user click. No auto-apply setting, ever.
-2. **Only what you give it.** A model sees only the context the user attached. Only `ContextBroker` may read the vault. Models can *ask* for more via `request_context`; the user approves.
+2. **Only what you give it.** A model sees only the context the user attached. Only `ContextBroker` may read the vault. Models can *ask* for more via `request_context`; the user approves. (The single exception is `PluginStorage`, which may read and write Lektor's own data under the plugin folder, and only via paths from `resolveStoragePath` / `resolveStorageDir`. Never widen it.)
 
 These are enforced by ESLint rules and property tests. Never weaken, disable or work around those checks. If a feature seems to need breaking a rule, stop and ask.
 

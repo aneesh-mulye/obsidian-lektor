@@ -37,7 +37,15 @@ const Pattern = z
 
 const ExcludedFolders = z.array(Pattern).max(MAX_EXCLUDED_PATTERNS, `More than ${MAX_EXCLUDED_PATTERNS} patterns.`);
 
-const Cap = z.int().min(0).max(50);
+/** A non-negative integer; `-0` (which JSON.parse can produce) is normalised to `0` so settings stay canonical. */
+const count = (max: number) =>
+  z
+    .int()
+    .min(0)
+    .max(max)
+    .transform((n) => n + 0);
+
+const Cap = count(50);
 
 const SECTIONS = {
   review: z.strictObject({
@@ -46,7 +54,7 @@ const SECTIONS = {
   context: z.strictObject({
     attachmentMode: z.enum(ATTACHMENT_MODES),
     excludedFolders: ExcludedFolders,
-    maxLinkDepth: z.int().min(0).max(3),
+    maxLinkDepth: count(3),
   }),
   tools: z.strictObject({
     searchesPerMessage: Cap,

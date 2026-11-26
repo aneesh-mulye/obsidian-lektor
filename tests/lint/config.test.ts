@@ -15,6 +15,7 @@ const PATHS = [
   'src/obsidian/ui/Sidebar.tsx',
   'src/obsidian/ContextBroker.ts',
   'src/obsidian/ReviewController.ts',
+  'src/obsidian/PluginStorage.ts',
   'src/obsidian/ContextBroker.tsx',
   'src/core/settings.ts',
   'src/core/deep/nested/thing.ts',

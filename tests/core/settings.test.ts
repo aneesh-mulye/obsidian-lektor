@@ -85,6 +85,19 @@ describe('SettingsStore', () => {
     expect(SettingsStore.load(disk(store.toData())).exclusionsIntact).toBe(false);
   });
 
+  // Regression: S2 seed 1865398749 (CI run). JSON.parse('-0') yields -0, which was kept as -0
+  // but saved as 0, so loading was not idempotent.
+  it('normalises -0 to 0, on load and on update', () => {
+    const raw = disk(DEFAULT_SETTINGS) as { tools: Record<string, unknown>; context: Record<string, unknown> };
+    raw.tools.fetchesPerMessage = -0;
+    raw.context.maxLinkDepth = -0;
+    const store = SettingsStore.load(raw);
+    expect(Object.is(store.settings.tools.fetchesPerMessage, 0)).toBe(true);
+    expect(Object.is(store.settings.context.maxLinkDepth, 0)).toBe(true);
+    expect(store.update({ tools: { searchesPerMessage: -0 } })).toEqual({ ok: true });
+    expect(Object.is(store.settings.tools.searchesPerMessage, 0)).toBe(true);
+  });
+
   it('treats an empty object as damaged, not as a fresh install', () => {
     const store = SettingsStore.load({});
     expect(store.exclusionsIntact).toBe(false);

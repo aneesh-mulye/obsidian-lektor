@@ -7,6 +7,10 @@
  *   1. No write without approval: only ReviewController may change a note.
  *   2. Only what you give it: only ContextBroker may read vault content.
  *
+ * One narrow exception: PluginStorage may read and write Lektor's own data
+ * (chats, edit history) under the plugin folder, and only through paths built
+ * by resolveStoragePath / resolveStorageDir in src/core/storage.ts.
+ *
  * See INVARIANTS.md (G1–G5). Never weaken or disable these; if a feature
  * seems to need it, stop and ask.
  *
@@ -18,6 +22,7 @@
 
 export const CONTEXT_BROKER = 'src/obsidian/ContextBroker.ts';
 export const REVIEW_CONTROLLER = 'src/obsidian/ReviewController.ts';
+export const PLUGIN_STORAGE = 'src/obsidian/PluginStorage.ts';
 
 const EXT = '{ts,tsx,mts,cts,js,mjs,cjs,jsx}';
 const SRC = `src/**/*.${EXT}`;
@@ -130,6 +135,53 @@ const S_REVIEW = [
   ...onReceiver(['vault'], ['read'], M_READ),
 ];
 
+/**
+ * PluginStorage: the adapter only as `<x>.vault.adapter.<allowed>(resolver(…), …)`.
+ * No aliasing, no computed access, no other vault members, and the resolver
+ * must be the real one from core/storage.
+ */
+const M_STORAGE = `${PLUGIN_STORAGE} may only call <app>.vault.adapter.<read|write|append|remove|exists|list|mkdir>(resolveStoragePath(…) or resolveStorageDir(…), …), with the resolver imported from core/storage, so every path it touches is confined to Lektor's data folder.`;
+const STORAGE_METHODS = ['read', 'write', 'append', 'remove', 'exists', 'list', 'mkdir'];
+const RESOLVERS = ['resolveStoragePath', 'resolveStorageDir'];
+
+const S_STORAGE = [
+  // .vault only when immediately followed by .adapter
+  {
+    selector: "MemberExpression[computed=false][property.name='vault']:not(MemberExpression[computed=false][property.name='adapter'] > MemberExpression.object)",
+    message: M_STORAGE,
+  },
+  // .adapter only as the receiver of a direct call to an allow-listed method
+  {
+    selector: `MemberExpression[computed=false][property.name='adapter']:not(CallExpression > MemberExpression.callee[computed=false][property.name=${alt(STORAGE_METHODS)}] > MemberExpression.object)`,
+    message: M_STORAGE,
+  },
+  // ...whose first argument is a direct call to a resolver
+  {
+    selector: `CallExpression[callee.object.property.name='adapter']:not([arguments.0.type='CallExpression'][arguments.0.callee.type='Identifier'][arguments.0.callee.name=${alt(RESOLVERS)}])`,
+    message: M_STORAGE,
+  },
+  // Computed, template and destructuring access to either handle.
+  ...access(['vault', 'adapter'], M_STORAGE).slice(1),
+  // The resolvers are the real ones: imported under their own name from core/storage, never redefined.
+  {
+    selector: `ImportDeclaration:not([source.value=/core.storage$/]) > ImportSpecifier[local.name=${alt(RESOLVERS)}]`,
+    message: M_STORAGE,
+  },
+  ...RESOLVERS.map((name) => ({
+    selector: `ImportSpecifier[local.name='${name}']:not([imported.name='${name}'])`,
+    message: M_STORAGE,
+  })),
+  {
+    selector: `:matches(FunctionDeclaration, ClassDeclaration, VariableDeclarator)[id.name=${alt(RESOLVERS)}]`,
+    message: M_STORAGE,
+  },
+  // Everything else that reaches note content stays banned.
+  ...access(['metadataCache', 'fileManager', 'editor', 'activeEditor', 'cm'], M_READ),
+  ...access(['cachedRead', 'readBinary', 'getViewData', 'registerEditorExtension'], M_READ),
+  { selector: `Property[key.name=${alt(['editorCallback', 'editorCheckCallback'])}]`, message: M_READ },
+  { selector: "Literal[value=/^editor-/]", message: M_READ },
+];
+
 // ---------------------------------------------------------------------------
 // Import groups
 
@@ -201,7 +253,7 @@ export const gateBlocks = [
   block(
     'obsidian',
     [SRC],
-    [CORE, CONTEXT_BROKER, REVIEW_CONTROLLER],
+    [CORE, CONTEXT_BROKER, REVIEW_CONTROLLER, PLUGIN_STORAGE],
     imports({ obsidianNames: I_CONTENT_NAMES, codemirror: true }),
     [...S_MODULES, ...S_EDITOR_WRITE_ANYWHERE, ...S_CONTENT],
   ),
@@ -233,6 +285,13 @@ export const gateBlocks = [
     imports({ obsidianNames: ['DataAdapter', 'FileSystemAdapter', 'MetadataCache'] }),
     [...S_MODULES, ...S_REVIEW],
   ),
+  block(
+    'plugin-storage',
+    [PLUGIN_STORAGE],
+    [],
+    imports({ obsidianNames: I_CONTENT_NAMES, codemirror: true }),
+    [...S_MODULES, ...S_EDITOR_WRITE_ANYWHERE, ...S_STORAGE],
+  ),
 ];
 
 /** Which gate block applies to a repo-relative path (null: not gated). Mirrors the globs above. */
@@ -240,6 +299,7 @@ export function gateCategory(path) {
   if (!/^src\/.+\.(ts|tsx|mts|cts|js|mjs|cjs|jsx)$/.test(path)) return null;
   if (path === CONTEXT_BROKER) return 'context-broker';
   if (path === REVIEW_CONTROLLER) return 'review-controller';
+  if (path === PLUGIN_STORAGE) return 'plugin-storage';
   if (path.startsWith('src/core/cli/')) return 'cli';
   if (path.startsWith('src/core/')) return 'core';
   return 'obsidian';

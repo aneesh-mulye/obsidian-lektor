@@ -4,7 +4,7 @@ Each invariant names its **generator** (what random inputs we throw at it), its 
 
 Status: **active** means a property test exists and runs; **planned (Mn)** means it lands with milestone *n*.
 
-Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk).
+Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk); "normalises -0 to 0, on load and on update" (S2, seed 1865398749 in a CI-strength run: `-0` was stored as `-0` but saved as `0`).
 
 ---
 
@@ -61,6 +61,39 @@ Regression tests from failing seeds or surviving mutants so far: `tests/core/set
 - **Generator:** a fixed set of representative paths (core, CLI, generic obsidian, `ContextBroker`, `ReviewController`, a `.tsx` view). The paths are fixed, not random, because the config is finite.
 - **Property:** the rules ESLint actually resolves for each path from `eslint.config.mjs` include the gate rules exactly as `eslint/gates.mjs` defines them for that path's category.
 - **Counterexample means:** a later config block overrides or switches off a gate. In flat config the last block that sets a rule wins, so this can happen silently.
+
+### G6. `PluginStorage` can only touch Lektor's own data folder — active
+
+`tests/lint/gates.property.test.ts`
+
+- **Generator:** a random file path under `src/` × a random snippet that uses the adapter: allow-listed calls (`read`, `write`, `append`, `remove`, `exists`, `list`, `mkdir`) whose first argument is `resolveStoragePath(…)` or `resolveStorageDir(…)`; the same calls with a raw path, a template string or a `join(…)` of a resolved directory; methods that are not allow-listed (`getFullPath`, `rename`, `readBinary`, …); computed access; aliasing the adapter in a variable; other vault members (`getMarkdownFiles`, `configDir`); and attempts to fake the resolver (defining a local `resolveStoragePath`, importing it from another module, or importing something else under that name).
+- **Property:** in `src/obsidian/PluginStorage.ts`, a gate error is reported unless the code is exactly `<x>.vault.adapter.<allow-listed>(resolveStoragePath(…) | resolveStorageDir(…), …)` with the resolver imported under its own name from `core/storage`. Every other file follows the G2 and G3 model: `ContextBroker` may read through the adapter but never write, and the rest may not touch it at all.
+- **Counterexample means:** the storage module can reach a path that the resolver never checked, so it becomes a second, unconfined path into the vault.
+
+### P1. Storage paths are confined — active
+
+`tests/core/storage.property.test.ts`
+
+- **Generator:** any string, or any value at all, as the plugin folder, namespace and key, mixed with adversarial ones: `..`, `.`, `a/b`, `a\b`, absolute paths, `%2e%2e`, NUL bytes, `__proto__`, upper case, Windows reserved names, over-long keys, and valid folders such as `.obsidian/plugins/lektor`.
+- **Property:** `resolveStoragePath` either throws `StorageError` or returns exactly `<root>/<namespace>/<key><ext>`. In that case the root has the form `.<config>/plugins/<folder>`, the namespace is one of `chats`/`history`, the key matches `^[a-z0-9][a-z0-9_-]{0,127}$`, and the path has exactly five segments, none of them empty, `.` or `..`, with no backslash. `resolveStorageDir` obeys the same rule with four segments. `keyFromStoragePath` inverts `resolveStoragePath` and returns null for every other path.
+- **Counterexample means:** a crafted key or folder escapes the plugin data folder and reads or overwrites a note.
+
+### P2. Distinct keys never collide — active
+
+`tests/core/storage.property.test.ts`
+
+- **Generator:** pairs of valid (namespace, key).
+- **Property:** different pairs resolve to paths that differ even when compared case-insensitively, because macOS and Windows file systems ignore case.
+- **Counterexample means:** one chat or history log silently overwrites another.
+
+### P3. `PluginStorage` only touches resolved paths, and behaves like a map (stateful) — active
+
+`tests/obsidian/PluginStorage.property.test.ts`, `fc.commands`
+
+- **Generator:** a fake adapter pre-seeded with notes and junk files (including files inside the namespace folders that are not valid keys), then random sequences of `write`, `append`, `read`, `remove`, `list` and `exists`-backed calls, each with a valid or adversarial namespace and key.
+- **Model:** a map from (namespace, key) to text.
+- **Property:** every path the adapter sees is `<root>/<ns>` or `<root>/<ns>/<valid key><ext>`. Calls with invalid input throw before any adapter call. `read` returns the model's value or null, `list` returns exactly the model's keys (junk files ignored), and pre-seeded notes are never read, changed or removed.
+- **Counterexample means:** the storage layer leaks or damages a file outside its folder, or loses data.
 
 ### S1. Loading settings is total and conforms — active
 
