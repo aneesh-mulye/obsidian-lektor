@@ -20,11 +20,13 @@ import {
   getPath,
   nearValid,
   baseUrl,
+  contextLength,
   modelRef,
   pattern,
   setPath,
   validSettings,
   validV1Settings,
+  validV2Settings,
 } from './settings.arbitraries';
 
 /** What Obsidian's saveData/loadData does to our data: a JSON round-trip. */
@@ -133,14 +135,35 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
     );
   });
 
-  it('S6: version-1 settings migrate to version 2 losslessly', () => {
+  it('S6: version-1 settings migrate (via 2) to version 3 losslessly', () => {
     fc.assert(
       fc.property(validV1Settings, (v1) => {
         const store = SettingsStore.load(disk(v1));
         const { version: _v, ...rest } = v1;
-        expect(store.settings).toEqual({ ...rest, version: 2, models: DEFAULT_SETTINGS.models });
+        expect(store.settings).toEqual({
+          ...rest,
+          version: 3,
+          models: DEFAULT_SETTINGS.models,
+          context: { ...rest.context, respectObsidianExclusions: true },
+        });
         expect(store.problems).toEqual([]);
         expect(store.exclusionsIntact).toBe(true);
+      }),
+    );
+  });
+
+  it('S7: version-2 settings migrate to version 3 losslessly', () => {
+    fc.assert(
+      fc.property(validV2Settings, (v2) => {
+        const store = SettingsStore.load(disk(v2));
+        const { version: _v, ...rest } = v2;
+        expect(store.settings).toEqual({
+          ...rest,
+          version: 3,
+          models: { ...rest.models, ollama: { ...rest.models.ollama, contextLength: 32768 } },
+          context: { ...rest.context, respectObsidianExclusions: true },
+        });
+        expect(store.problems).toEqual([]);
       }),
     );
   });
@@ -236,6 +259,7 @@ const validField: Record<string, Record<string, fc.Arbitrary<unknown>>> = {
   context: {
     attachmentMode: fc.constantFrom('ask', 'allowed', 'upfront'),
     maxLinkDepth: fc.integer({ min: 0, max: 3 }),
+    respectObsidianExclusions: fc.boolean(),
   },
   tools: {
     searchesPerMessage: fc.integer({ min: 0, max: 50 }),
@@ -243,7 +267,7 @@ const validField: Record<string, Record<string, fc.Arbitrary<unknown>>> = {
   },
   privacy: { storeFullTranscripts: fc.boolean() },
   models: {
-    ollama: baseUrl.map((u) => ({ baseUrl: u })),
+    ollama: fc.record({ baseUrl, contextLength }),
     defaultModel: fc.option(modelRef, { nil: null }),
   },
 };

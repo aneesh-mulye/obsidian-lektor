@@ -9,6 +9,8 @@ export interface SettingsHost extends Plugin {
   saveSettings(): Promise<void>;
   /** Contact the configured Ollama server and describe what it has. */
   checkOllama(): Promise<string>;
+  /** Exclusion or link-depth settings changed. */
+  contextSettingsChanged(): void;
 }
 
 const DISPLAY_LABELS: Record<DisplayMode, string> = {
@@ -62,6 +64,27 @@ export class LektorSettingTab extends PluginSettingTab {
       )
       .addButton((button) => button.setButtonText('Save and check').onClick(() => void this.saveOllamaUrl(urlDraft)));
 
+    new Setting(containerEl)
+      .setName('Ollama context length')
+      .setDesc(
+        'Tokens of context Ollama gives each request (sent as num_ctx), and the budget Lektor checks messages against. ' +
+          "To avoid reloading the model when other apps use it too, match your server's OLLAMA_CONTEXT_LENGTH. Larger values need more memory.",
+      )
+      .addText((text) => {
+        text.inputEl.type = 'number';
+        text.inputEl.min = '2048';
+        text.inputEl.max = '1048576';
+        text
+          .setPlaceholder('32768')
+          .setValue(String(s.models.ollama.contextLength))
+          .onChange((value) => {
+            const n = Number(value);
+            if (Number.isInteger(n) && n >= 2048 && n <= 1048576) {
+              void this.apply({ models: { ollama: { ...this.host.settingsStore.settings.models.ollama, contextLength: n } } }, false);
+            }
+          });
+      });
+
     // Context
     new Setting(containerEl).setName('Context').setHeading();
 
@@ -75,7 +98,11 @@ export class LektorSettingTab extends PluginSettingTab {
     let draft = store.exclusionsIntact ? s.context.excludedFolders.join('\n') : '';
     new Setting(containerEl)
       .setName('Excluded folders')
-      .setDesc('One glob pattern per line, such as Private/**. Matching notes are never sent to a model and never appear in pickers.')
+      .setDesc(
+        'One pattern per line. A name such as Private excludes every folder or note with that name, and everything in it; ' +
+          'a path such as Work/Clients is matched from the top of the vault; * and ** work as in .gitignore. ' +
+          'Matching ignores case. Excluded notes are never sent to a model and never appear in pickers.',
+      )
       .setClass('lektor-exclusions')
       .addTextArea((text) =>
         text
@@ -90,6 +117,15 @@ export class LektorSettingTab extends PluginSettingTab {
           .setButtonText('Save list')
           .setCta()
           .onClick(() => void this.saveExclusions(draft)),
+      );
+
+    new Setting(containerEl)
+      .setName("Also respect Obsidian's excluded files")
+      .setDesc('Treat everything in Settings → Files and links → Excluded files as excluded too.')
+      .addToggle((toggle) =>
+        toggle.setValue(s.context.respectObsidianExclusions).onChange((value) => {
+          void this.apply({ context: { respectObsidianExclusions: value } }).then(() => this.host.contextSettingsChanged());
+        }),
       );
 
     new Setting(containerEl)
@@ -110,7 +146,7 @@ export class LektorSettingTab extends PluginSettingTab {
           .setLimits(0, 3, 1)
           .setValue(s.context.maxLinkDepth)
           .setDynamicTooltip()
-          .onChange((value) => void this.apply({ context: { maxLinkDepth: value } })),
+          .onChange((value) => void this.apply({ context: { maxLinkDepth: value } }).then(() => this.host.contextSettingsChanged())),
       );
 
     // Tools
@@ -164,11 +200,11 @@ export class LektorSettingTab extends PluginSettingTab {
       );
   }
 
-  private async apply(patch: SettingsPatch): Promise<void> {
+  private async apply(patch: SettingsPatch, redisplayOnError = true): Promise<void> {
     const result = this.host.settingsStore.update(patch);
     if (!result.ok) {
       new Notice(`Lektor: ${result.problems[0]?.message ?? 'that value is not allowed.'}`);
-      this.display();
+      if (redisplayOnError) this.display();
       return;
     }
     await this.save();
@@ -180,7 +216,7 @@ export class LektorSettingTab extends PluginSettingTab {
       new Notice('Lektor: enter an http:// or https:// address, such as http://127.0.0.1:11434.');
       return;
     }
-    await this.apply({ models: { ollama: { baseUrl: url } } });
+    await this.apply({ models: { ollama: { ...this.host.settingsStore.settings.models.ollama, baseUrl: url } } });
     this.display();
     try {
       new Notice(`Lektor: ${await this.host.checkOllama()}`);
@@ -196,6 +232,7 @@ export class LektorSettingTab extends PluginSettingTab {
       return;
     }
     if (await this.save()) {
+      this.host.contextSettingsChanged();
       new Notice('Lektor: excluded folders saved.');
       this.display();
     }

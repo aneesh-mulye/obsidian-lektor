@@ -50,10 +50,18 @@ export const validV1Settings = fc.record({
   privacy: fc.record({ storeFullTranscripts: fc.boolean() }),
 });
 
+export const validV2Settings = validV1Settings.chain((v1) =>
+  fc
+    .record({ ollama: fc.record({ baseUrl }), defaultModel: fc.option(modelRef, { nil: null }) })
+    .map((models) => ({ ...v1, version: 2 as const, models })),
+);
+
+export const contextLength = fc.oneof(fc.constantFrom(2048, 32768, 65536, 262144, 1048576), fc.integer({ min: 2048, max: 1048576 }));
+
 export const validSettings: fc.Arbitrary<Settings> = fc.record({
-  version: fc.constant(2 as const),
+  version: fc.constant(3 as const),
   models: fc.record({
-    ollama: fc.record({ baseUrl }),
+    ollama: fc.record({ baseUrl, contextLength }),
     defaultModel: fc.option(modelRef, { nil: null }),
   }),
   review: fc.record({ defaultDisplayMode: fc.constantFrom(...DISPLAY_MODES) }),
@@ -61,6 +69,7 @@ export const validSettings: fc.Arbitrary<Settings> = fc.record({
     attachmentMode: fc.constantFrom(...ATTACHMENT_MODES),
     excludedFolders: fc.array(pattern, { maxLength: 8 }),
     maxLinkDepth: fc.integer({ min: 0, max: 3 }),
+    respectObsidianExclusions: fc.boolean(),
   }),
   tools: fc.record({
     searchesPerMessage: fc.integer({ min: 0, max: 50 }),
@@ -110,6 +119,8 @@ export const LEAVES: Record<string, fc.Arbitrary<unknown>> = {
     fc.constant(null),
     fc.integer(),
   ),
+  'models.ollama.contextLength': fc.oneof(fc.integer({ max: 2047 }), fc.integer({ min: 1048577 }), fc.constant(4096.5), fc.constant('32768'), fc.constant(null)),
+  'context.respectObsidianExclusions': fc.oneof(fc.constant('yes'), fc.constant(0), fc.constant(null)),
   'models.defaultModel': fc.oneof(
     fc.constantFrom(
       { provider: 'Ollama', model: 'x' },
@@ -176,7 +187,7 @@ export const nearValid: fc.Arbitrary<unknown> = fc
   .tuple(
     validSettings,
     fc.subarray([...Object.keys(LEAVES), 'context.excludedFolders', 'version']),
-    fc.array(fc.anything(), { minLength: 16, maxLength: 16 }),
+    fc.array(fc.anything(), { minLength: 18, maxLength: 18 }),
     fc.subarray(['review', 'context', 'tools', 'privacy', 'models']),
     fc.subarray(['', 'review', 'context', 'tools', 'privacy', 'models']),
     fc.string(),
@@ -187,7 +198,7 @@ export const nearValid: fc.Arbitrary<unknown> = fc
     for (const where of extraIn) {
       const target = (where === '' ? raw : raw[where]) as Record<string, unknown>;
       target['autoApply'] = true;
-      target[`x-${extraKey}`] = values[15];
+      target[`x-${extraKey}`] = values[17];
     }
     for (const section of deleted) delete raw[section];
     return raw;

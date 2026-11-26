@@ -27,6 +27,7 @@ These are compiled into the released `main.js`. The production build (`npm run b
 | mdurl | 2.1.0 | MIT | markdown-it dependency |
 | punycode.js | 2.3.1 | MIT | markdown-it dependency |
 | uc.micro | 3.0.0 | MIT | markdown-it dependency |
+| picomatch | 4.0.7 | MIT | Glob matching for excluded folders (`src/core/context/exclusions.ts`) |
 
 markdown-it also depends on argparse (PSF-2.0), which is used only by its command-line tool and is not bundled. The build fails if a bundled package has no licence file.
 

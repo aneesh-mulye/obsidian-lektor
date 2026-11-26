@@ -9,10 +9,10 @@ const disk = (v: unknown): unknown => JSON.parse(JSON.stringify(v)) as unknown;
 describe('SettingsStore', () => {
   it('has conservative defaults', () => {
     expect(DEFAULT_SETTINGS).toEqual({
-      version: 2,
-      models: { ollama: { baseUrl: 'http://127.0.0.1:11434' }, defaultModel: null },
+      version: 3,
+      models: { ollama: { baseUrl: 'http://127.0.0.1:11434', contextLength: 32768 }, defaultModel: null },
       review: { defaultDisplayMode: 'sidebar' },
-      context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3 },
+      context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3, respectObsidianExclusions: true },
       tools: { searchesPerMessage: 5, fetchesPerMessage: 5 },
       privacy: { storeFullTranscripts: false },
     });
@@ -116,10 +116,10 @@ describe('SettingsStore', () => {
   });
 
   it('reports settings from a newer version but keeps what it can read', () => {
-    const raw = { ...(disk(DEFAULT_SETTINGS) as object), version: 3 };
+    const raw = { ...(disk(DEFAULT_SETTINGS) as object), version: 4 };
     const store = SettingsStore.load(raw);
     expect(store.problems).toEqual([expect.objectContaining({ path: 'version' })]);
     expect(store.exclusionsIntact).toBe(true);
-    expect(store.settings.version).toBe(2);
+    expect(store.settings.version).toBe(3);
   });
 });

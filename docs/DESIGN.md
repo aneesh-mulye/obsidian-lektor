@@ -161,7 +161,7 @@ Context is a visible list of **chips** above the input; what is in the chips is 
 
 | Source | How | Default |
 | --- | --- | --- |
-| Current note | Added automatically when a chat starts or the active note changes | On; one click removes it |
+| Current note | One chip that follows the active note; a pin keeps a note when you move on | On; removing it stops the following for that chat |
 | Selection | Ribbon / hotkey "Add selection"; also auto-offered when text is selected | Off |
 | @-mention | Type `@` for a fuzzy note picker | — |
 | Drag and drop | Drag notes or files from the file explorer into the sidebar | — |
@@ -180,9 +180,9 @@ Context is a visible list of **chips** above the input; what is in the chips is 
 
 (Illustrative numbers.) Excluded notes are counted separately ("2 excluded, not sent"), and a depth that would push the chat past the model's context window is shown in amber.
 
-This is cheap to compute without reading any note: link structure comes from Obsidian's `metadataCache.resolvedLinks`, inverted once into a backlink index and updated on the cache's `resolved` event; sizes come from `TFile.stat.size`, converted to tokens at roughly 4 characters per token. A breadth-first walk to depth 3 touches only the cached graph. Exact token counts are computed only for notes actually added. A property test checks that the preview always matches what `ContextBroker` would actually send at that depth.
+This is cheap to compute without reading any note: link structure comes from Obsidian's `metadataCache.resolvedLinks`, inverted once into a backlink index and updated on the cache's `resolved` event; sizes come from `TFile.stat.size`, converted to tokens with the same conservative estimate used everywhere (one token per 3 bytes of UTF-8). A breadth-first walk to depth 3 touches only the cached graph, and never walks through an excluded note. Ollama has no tokenizer endpoint, so exact counts are not available before sending; after each reply the real prompt size the backend reports is shown next to the estimate. A property test checks that the preview always matches what `ContextBroker` would actually send at that depth.
 
-Each chip shows its token estimate; the header shows the total against the model's context window, turning amber past 80%.
+Each chip shows its token estimate; the composer shows the total against the model's context window, turning amber past 80%. A request whose estimate (plus room for the reply) does not fit the window is refused with an explanation, never sent to be silently truncated.
 
 **Model-initiated requests.** The model gets one meta-tool, `request_context`, which accepts a structured request: specific notes by path or title, "notes linked from X to depth N", a folder, a search query over note titles, or attachments. The broker resolves it into a concrete list, and the user sees an approval card listing every file with a checkbox (all ticked). Approve, approve subset, or deny. Approved items become chips.
 
@@ -196,7 +196,7 @@ In all modes, attachments the provider can't accept (e.g. images to a text-only 
 
 **What a note sends.** Note text plus frontmatter, wrapped with its vault path so the model can refer to it and so proposals can name their target.
 
-**Excluded folders.** A settings list of glob patterns. Excluded items never appear in pickers, link-depth expansion, or `request_context` results; the broker silently drops them and shows the user a count ("2 excluded notes skipped").
+**Excluded folders.** A settings list of glob patterns (gitignore-style: a pattern without a slash, such as `Private`, matches that name at any depth and everything inside it; matching ignores case). Obsidian's own "Excluded files" list is respected too, behind a setting that is on by default. Hidden files and folders, the config folder and `.lektor/` are always excluded. Excluded items never appear in pickers, link-depth expansion, or `request_context` results; the broker silently drops them and shows the user a count ("2 excluded notes skipped"). An unreadable or invalid pattern excludes everything until it is fixed.
 
 ## Tools framework
 
@@ -404,6 +404,13 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
 | Inline CodeMirror review is the most complex part | Schedule | Ship sidebar diff first (milestone 5), inline later (6) |
 
 **Decided since the first draft**
+
+- *(2026-11-26, before milestone 3)* Ollama's context length is a Lektor setting (default 32,768), sent as `num_ctx` on every request and used as the budget. Sending a fixed value means the model is never reloaded between Lektor requests.
+- *(2026-11-26)* Token counts are conservative estimates (one token per 3 bytes of UTF-8), calibrated by the real prompt size the backend reports after each reply. Over-budget requests are refused.
+- *(2026-11-26)* The current-note chip follows the active note; pinning keeps a note, and removing the chip stops the following for that chat.
+- *(2026-11-26)* Obsidian's "Excluded files" are respected, behind a setting that is on by default.
+- *(2026-11-26)* Reopening a chat restores its chips from the stored manifest and reads them fresh. Deleted or newly excluded notes are dropped with a notice, and notes changed since they were last sent are marked. Selections are stored as a note path, character range and hash, never as text, and are dropped if the text has changed.
+- *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.
 - Accepted AI edits are logged permanently (append-only), the conservative choice.

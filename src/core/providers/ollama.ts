@@ -71,11 +71,20 @@ export class OllamaProvider implements ChatProvider {
   readonly label = 'Ollama';
   readonly #show = new Map<string, Promise<ShowInfo>>();
 
-  /** `baseUrl` is read on every call, so a settings change applies at once. */
+  /**
+   * `baseUrl` and `contextLength` are read on every call, so a settings change applies at once.
+   * `contextLength` is sent as `num_ctx` with every request (capped at the model's maximum), so the
+   * budget Lektor checks against is the one Ollama uses, and the model is never reloaded between requests.
+   */
   constructor(
     private readonly http: HttpClient,
     private readonly baseUrl: () => string,
+    private readonly contextLength: () => number,
   ) {}
+
+  private numCtx(info: ShowInfo): number {
+    return Math.min(this.contextLength(), info.contextWindow ?? Number.POSITIVE_INFINITY);
+  }
 
   private url(endpoint: 'tags' | 'show' | 'chat'): string {
     return `${this.baseUrl()}/api/${endpoint}`;
@@ -109,7 +118,7 @@ export class OllamaProvider implements ChatProvider {
       toolCalling: info.capabilities.includes('tools') ? 'native' : 'none',
       nativeWebSearch: false,
       images: info.capabilities.includes('vision'),
-      contextWindow: info.contextWindow,
+      contextWindow: this.numCtx(info),
     };
   }
 
@@ -147,6 +156,7 @@ export class OllamaProvider implements ChatProvider {
       model: req.model,
       messages: req.messages.map(({ role, content }) => ({ role, content })),
       stream: true,
+      options: { num_ctx: this.numCtx(info) },
       ...(info.capabilities.includes('thinking') ? { think: true } : {}),
     };
     const res = await this.send({

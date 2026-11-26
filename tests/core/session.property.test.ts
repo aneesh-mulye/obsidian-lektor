@@ -7,6 +7,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { ChatSession } from '../../src/core/chat/session';
 import type { Chat } from '../../src/core/chat/types';
+import { EMPTY_CONTEXT } from '../../src/core/context/state';
 import type { Capabilities, ChatEvent, ChatMessage, ChatProvider, ChatRequest, ModelRef } from '../../src/core/providers/types';
 
 // ---------------------------------------------------------------------------
@@ -39,13 +40,14 @@ class FakeProvider implements ChatProvider {
   readonly requests: ChatMessage[][] = [];
   readonly channels: Channel[] = [];
   failNextCapabilities = false;
+  window = 4096;
 
   capabilities(_model: string): Promise<Capabilities> {
     if (this.failNextCapabilities) {
       this.failNextCapabilities = false;
       return Promise.reject(new Error('unknown model'));
     }
-    return Promise.resolve({ toolCalling: 'none', nativeWebSearch: false, images: false, contextWindow: 4096 });
+    return Promise.resolve({ toolCalling: 'none', nativeWebSearch: false, images: false, contextWindow: this.window });
   }
   listModels() {
     return Promise.resolve([{ id: 'm', name: 'm' }]);
@@ -80,12 +82,29 @@ interface Model {
   expectedRequests: ChatMessage[][];
   failNextCapabilities: boolean;
   pendingError: boolean;
+  window: number;
+  /** Tokens the (fake) context message is estimated at; 0 means no context. */
+  contextTokens: number;
+  failNextPrepare: boolean;
+  calibration: number;
+  /** The live reply's estimate and reported prompt size, for calibration. */
+  replyEstimate: number;
+  replyInput: number | null;
 }
 interface Real {
   session: ChatSession;
   provider: FakeProvider;
   saved: Chat | null;
+  contextTokens: number;
+  failNextPrepare: boolean;
 }
+
+/** C6's budget rule, written independently: ~1 token per 3 bytes, 4 per message, a fifth of the window for the reply. */
+const bytes = (t: string) => new TextEncoder().encode(t).length;
+const estimateOf = (m: Model, history: MMsg[]) => m.contextTokens + project(history).reduce((t, x) => t + Math.ceil(bytes(x.content) / 3) + 4, 0);
+const reserve = (w: number) => Math.min(8192, Math.max(1024, Math.round(w * 0.2)));
+const fitsModel = (m: Model, estimate: number) => Math.ceil(estimate * m.calibration) + reserve(m.window) <= m.window;
+const contextMessage = (n: number) => `CONTEXT(${n})`;
 
 /** C1's projection, written independently of src/core/chat/transcript.ts. */
 function project(messages: MMsg[]): ChatMessage[] {
@@ -109,8 +128,22 @@ function startReply(m: Model, history: MMsg[]): void {
     finishReply(m, 'error');
     return;
   }
-  m.expectedRequests.push(project(history));
+  if (m.failNextPrepare) {
+    m.failNextPrepare = false;
+    finishReply(m, 'error');
+    return;
+  }
+  const estimate = estimateOf(m, history);
+  if (!fitsModel(m, estimate)) {
+    finishReply(m, 'error');
+    return;
+  }
+  // C6: exactly the context message (if any) followed by the C1 transcript.
+  const system: ChatMessage[] = m.contextTokens > 0 ? [{ role: 'system', content: contextMessage(m.contextTokens) }] : [];
+  m.expectedRequests.push([...system, ...project(history)]);
   m.channel = m.channelsOpened++;
+  m.replyEstimate = estimate;
+  m.replyInput = null;
 }
 
 function finishReply(m: Model, status: Status): void {
@@ -203,10 +236,28 @@ const emitError = (): Cmd =>
 const finish = (reason: 'stop' | 'length' | 'error' | 'aborted'): Cmd =>
   cmd(`done(${reason})`, (m, r) =>
     feed(m, r, { event: { type: 'done', reason } }, () => {
+      if ((reason === 'stop' || reason === 'length') && m.replyInput !== null && m.replyEstimate > 0) {
+        m.calibration = Math.min(4, Math.max(1, m.replyInput / m.replyEstimate));
+      }
       const status: Status = reason === 'stop' ? 'complete' : reason === 'length' ? 'truncated' : reason === 'aborted' ? 'stopped' : 'error';
       finishReply(m, status);
     }),
   );
+
+const emitUsage = (input: number): Cmd =>
+  cmd(`usage(${input})`, (m, r) => feed(m, r, { event: { type: 'usage', inputTokens: input, outputTokens: 1 } }, () => (m.replyInput = input)));
+
+const setContextSize = (n: number): Cmd =>
+  cmd(`contextSize(${n})`, (m, r) => {
+    m.contextTokens = n;
+    r.contextTokens = n;
+  });
+
+const failPrepare = (): Cmd =>
+  cmd('failNextPrepare()', (m, r) => {
+    m.failNextPrepare = true;
+    r.failNextPrepare = true;
+  });
 
 const endEarly = (): Cmd => cmd('end-without-done', (m, r) => feed(m, r, { end: true }, () => finishReply(m, 'error')));
 const throwInStream = (): Cmd => cmd('throw', (m, r) => feed(m, r, { fail: new Error('socket') }, () => finishReply(m, 'error')));
@@ -216,6 +267,8 @@ const throwInStream = (): Cmd => cmd('throw', (m, r) => feed(m, r, { fail: new E
 const commands = fc.commands(
   [
     fc.oneof({ weight: 3, arbitrary: fc.constantFrom('hello', 'again', 'x') }, fc.string({ maxLength: 8 }), fc.constantFrom('  ', '')).map(send),
+    // Long messages, so the transcript itself can overflow the window.
+    fc.integer({ min: 1000, max: 12000 }).map((n) => send('w'.repeat(n))),
     fc.constant(regenerate()),
     fc.constant(stop()),
     fc.constantFrom('fake', 'fake', 'fake', 'missing').map(setModel),
@@ -227,16 +280,29 @@ const commands = fc.commands(
     fc.constantFrom('stop' as const, 'error' as const).map(finish),
     fc.constant(endEarly()),
     fc.constant(throwInStream()),
+    fc.integer({ min: 0, max: 20000 }).map(emitUsage),
+    fc.constantFrom(0, 0, 20, 400, 1500, 3000, 6000).map(setContextSize),
+    fc.constant(failPrepare()),
   ],
   { maxCommands: 60, size: 'large' },
 );
 
-function setup(): { model: Model; real: Real } {
+function setup(window = 4096): { model: Model; real: Real } {
   const provider = new FakeProvider();
+  provider.window = window;
   let n = 0;
-  const real: Real = { provider, saved: null, session: undefined as unknown as ChatSession };
-  const chat: Chat = { id: 'chat-1', title: '', createdAt: 0, updatedAt: 0, model: { provider: 'fake', model: 'm' }, messages: [] };
+  const real: Real = { provider, saved: null, session: undefined as unknown as ChatSession, contextTokens: 0, failNextPrepare: false };
+  const chat: Chat = { id: 'chat-1', title: '', createdAt: 0, updatedAt: 0, model: { provider: 'fake', model: 'm' }, messages: [], context: EMPTY_CONTEXT };
   real.session = new ChatSession(chat, {
+    prepare: () => {
+      if (real.failNextPrepare) {
+        real.failNextPrepare = false;
+        return Promise.reject(new Error('cannot read'));
+      }
+      const t = real.contextTokens;
+      const manifest = { notes: [], selections: [], backlinkLists: 0, excluded: 0 };
+      return Promise.resolve(t > 0 ? { message: contextMessage(t), tokens: t, manifest } : { message: null, tokens: 0, manifest });
+    },
     providers: { get: (id) => (id === 'fake' ? provider : undefined) },
     clock: { now: () => ++n },
     newId: () => `id-${++n}`,
@@ -247,17 +313,31 @@ function setup(): { model: Model; real: Real } {
   });
   return {
     real,
-    model: { messages: [], busy: false, model: { provider: 'fake', model: 'm' }, channel: null, channelsOpened: 0, expectedRequests: [], failNextCapabilities: false, pendingError: false },
+    model: {
+      messages: [], busy: false, model: { provider: 'fake', model: 'm' }, channel: null, channelsOpened: 0, expectedRequests: [],
+      failNextCapabilities: false, pendingError: false, window, contextTokens: 0, failNextPrepare: false, calibration: 1, replyEstimate: 0, replyInput: null,
+    },
   };
 }
 
 describe('ChatSession (INVARIANTS.md C1–C5)', () => {
-  it('C1–C5 hold for any sequence of user and provider actions', async () => {
+  it('C1–C6 hold for any sequence of user and provider actions', async () => {
     await fc.assert(
-      fc.asyncProperty(commands, async (cmds) => {
-        await fc.asyncModelRun(setup, cmds);
+      fc.asyncProperty(fc.integer({ min: 2048, max: 9000 }), commands, async (window, cmds) => {
+        await fc.asyncModelRun(() => setup(window), cmds);
       }),
     );
+  });
+
+  it('C6: refuses an over-budget message with an explanation and never calls the provider', async () => {
+    const { real } = setup(4096);
+    real.contextTokens = 5000;
+    real.session.send('hi');
+    await settle();
+    expect(real.provider.requests).toEqual([]);
+    const reply = real.session.chat.messages[1]!;
+    expect(reply).toMatchObject({ status: 'error' });
+    expect(reply.role === 'assistant' && reply.error).toContain("doesn't fit the model's context length of 4.1k");
   });
 
   it('C3: a stopped reply never changes, even if the provider keeps talking', async () => {
@@ -295,6 +375,44 @@ describe('ChatSession (INVARIANTS.md C1–C5)', () => {
       { role: 'user', content: 'two' },
       { role: 'user', content: 'three' },
     ]);
+  });
+
+  it('C6: a reported prompt size calibrates later estimates (never below 1)', async () => {
+    const { real } = setup(4096);
+    real.contextTokens = 1000;
+    real.session.send('hi');
+    await settle();
+    // Ollama says the prompt was four times the estimate.
+    real.provider.channels[0]!.push({ event: { type: 'usage', inputTokens: 4000, outputTokens: 1 } });
+    real.provider.channels[0]!.push({ event: { type: 'done', reason: 'stop' } });
+    await settle();
+    expect(real.session.calibration).toBeGreaterThan(3.9);
+    real.session.send('again'); // ~1,010 estimated, ×3.9 ≈ 4,000 — no longer fits 4,096 with room for a reply
+    await settle();
+    expect(real.provider.requests).toHaveLength(1);
+    expect(real.session.chat.messages[3]).toMatchObject({ status: 'error' });
+
+    const low = setup(4096).real;
+    low.session.send('hi');
+    await settle();
+    low.provider.channels[0]!.push({ event: { type: 'usage', inputTokens: 1, outputTokens: 1 } });
+    low.provider.channels[0]!.push({ event: { type: 'done', reason: 'stop' } });
+    await settle();
+    expect(low.session.calibration).toBe(1);
+  });
+
+  it('C6: the transcript counts towards the budget, not just the context', async () => {
+    const { real } = setup(4096);
+    real.session.send('w'.repeat(10000)); // 3,334 + 4 tokens + 1,024 reserve = 4,362 > 4,096
+    await settle();
+    expect(real.provider.requests).toEqual([]);
+    expect(real.session.chat.messages[1]).toMatchObject({ status: 'error' });
+    // …while 9,000 characters (3,004 + 1,024 = 4,028) still fits, in a fresh chat
+    // (the refused message stays in this one's transcript, as the user sees it).
+    const fresh = setup(4096).real;
+    fresh.session.send('w'.repeat(9000));
+    await settle();
+    expect(fresh.provider.requests).toHaveLength(1);
   });
 
   it('fails closed when capabilities cannot be read', async () => {

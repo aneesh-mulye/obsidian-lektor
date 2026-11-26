@@ -7,7 +7,10 @@
  * is never more than one live stream; a stopped reply is final.
  */
 
-import type { ChatEvent, ModelRef } from '../providers/types';
+import { type ContextManifest, type PreparedContext, recordSent, sha256 } from '../context/prepare';
+import type { ContextState } from '../context/state';
+import { MESSAGE_OVERHEAD, estimateTokens, fits, formatTokens } from '../context/tokens';
+import type { ChatEvent, ChatMessage, ModelRef } from '../providers/types';
 import { titleFrom, toRequestMessages } from './transcript';
 import type { AssistantMessage, Chat, Clock, Message, ProviderLookup } from './types';
 
@@ -18,7 +21,14 @@ export interface SessionDeps {
   /** Persist the chat. Called after every user action and when a reply ends. */
   save: (chat: Chat) => Promise<void>;
   onSaveError?: (err: unknown) => void;
+  /** Build the context message for the chat's chips (INVARIANTS.md X2). Failure means nothing is sent. */
+  prepare?: (state: ContextState) => Promise<PreparedContext>;
+  /** Whether to keep the context text sent with each reply ("store full transcripts"). */
+  storeFullTranscripts?: () => boolean;
 }
+
+/** Calibration is the ratio of real to estimated prompt tokens, kept between 1 and 4. */
+const clampCalibration = (r: number) => Math.min(4, Math.max(1, r));
 
 export class ChatSession {
   #chat: Chat;
@@ -27,6 +37,8 @@ export class ChatSession {
   #busy = false;
   #controller: AbortController | null = null;
   #saving: Promise<void> = Promise.resolve();
+  /** Real ÷ estimated prompt tokens from the last finished reply (INVARIANTS.md C6). */
+  #calibration = 1;
   readonly #listeners = new Set<() => void>();
 
   constructor(
@@ -77,6 +89,18 @@ export class ChatSession {
     this.#persist();
   }
 
+  /** Replace the chat's context (the chips). */
+  setContext(context: ContextState): void {
+    if (context === this.#chat.context) return;
+    this.#set({ ...this.#chat, context });
+    this.#emit();
+    if (this.#chat.messages.length > 0) this.#persist();
+  }
+
+  get calibration(): number {
+    return this.#calibration;
+  }
+
   /** Use another model from the next message on. */
   setModel(model: ModelRef): void {
     this.#set({ ...this.#chat, model });
@@ -116,10 +140,24 @@ export class ChatSession {
       const provider = this.deps.providers.get(model.provider);
       if (!provider) throw new Error(`The ${model.provider} backend is not available.`);
       // Fail closed: no stream unless the model's capabilities are known (DESIGN.md § The two hard rules).
-      await provider.capabilities(model.model);
+      const caps = await provider.capabilities(model.model);
+      if (!live()) return;
+      const window = caps.contextWindow;
+      // The context is read fresh for every message; if it can't be, nothing is sent.
+      const prepared = this.deps.prepare ? await this.deps.prepare(this.#chat.context) : null;
       if (!live()) return;
 
-      iterator = provider.stream({ model: model.model, messages: toRequestMessages(history) }, signal)[Symbol.asyncIterator]();
+      const transcript = toRequestMessages(history);
+      const estimate = (prepared?.tokens ?? 0) + transcript.reduce((t, m) => t + estimateTokens(m.content) + MESSAGE_OVERHEAD, 0);
+      if (!fits(estimate, this.#calibration, window)) {
+        this.#end('error', tooLong(Math.ceil(estimate * this.#calibration), window));
+        return;
+      }
+      const messages: ChatMessage[] = prepared?.message ? [{ role: 'system', content: prepared.message }, ...transcript] : transcript;
+      await this.#recordContext(prepared, estimate);
+      if (!live()) return;
+
+      iterator = provider.stream({ model: model.model, messages }, signal)[Symbol.asyncIterator]();
       for (;;) {
         const step = await iterator.next();
         if (!live()) return;
@@ -148,6 +186,7 @@ export class ChatSession {
             pendingError = event.message;
             break;
           case 'done':
+            if (event.reason === 'stop' || event.reason === 'length') this.#calibrate(window);
             if (event.reason === 'stop') this.#end('complete');
             else if (event.reason === 'length') this.#end('truncated');
             else if (event.reason === 'aborted') this.#end('stopped');
@@ -165,6 +204,36 @@ export class ChatSession {
       } catch {
         // ignore
       }
+    }
+  }
+
+  /** Note on the reply what it was sent with; with full transcripts on, keep the text too. */
+  async #recordContext(prepared: PreparedContext | null, estimate: number): Promise<void> {
+    let contextHash: string | undefined;
+    if (prepared?.message && this.deps.storeFullTranscripts?.()) {
+      contextHash = await sha256(prepared.message);
+      this.#set({ ...this.#chat, sentContext: { ...(this.#chat.sentContext ?? {}), [contextHash]: prepared.message } });
+    }
+    const manifest: ContextManifest | undefined = prepared?.manifest;
+    this.#updateReply((r) => ({
+      ...r,
+      promptEstimate: estimate,
+      ...(manifest ? { context: manifest } : {}),
+      ...(contextHash ? { contextHash } : {}),
+    }));
+    if (manifest) this.#set({ ...this.#chat, context: recordSent(this.#chat.context, manifest) });
+    this.#emit();
+  }
+
+  /** Learn from the real prompt size the backend reported; warn if the context was full. */
+  #calibrate(window: number): void {
+    const reply = this.#chat.messages.at(-1);
+    if (reply?.role !== 'assistant') return;
+    const input = reply.usage?.inputTokens;
+    if (input === undefined || !reply.promptEstimate) return;
+    this.#calibration = clampCalibration(input / reply.promptEstimate);
+    if (input + (reply.usage?.outputTokens ?? 0) >= window * 0.98) {
+      this.#updateReply((r) => ({ ...r, notice: 'This filled the model’s context length, so the model may not have seen all of the conversation.' }));
     }
   }
 
@@ -198,4 +267,12 @@ export class ChatSession {
       .then(() => this.deps.save(snapshot))
       .catch((err: unknown) => this.deps.onSaveError?.(err));
   }
+}
+
+function tooLong(tokens: number, window: number): string {
+  return (
+    `This message and its context come to about ${formatTokens(tokens)} tokens, which, with room for the reply, ` +
+    `doesn't fit the model's context length of ${formatTokens(window)}. Remove some context, start a new chat, ` +
+    'or raise the context length in Lektor’s settings.'
+  );
 }

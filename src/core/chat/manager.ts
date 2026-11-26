@@ -3,6 +3,9 @@
 
 /** The sidebar's chat state: the open chat, starting and switching chats, history. */
 
+import { prepareContext } from '../context/prepare';
+import { EMPTY_CONTEXT } from '../context/state';
+import { type ContextDeps, ContextController } from './ContextController';
 import type { ModelRef } from '../providers/types';
 import type { ChatHistory, ChatSummary } from './history';
 import { ChatSession } from './session';
@@ -16,6 +19,10 @@ export interface ManagerDeps {
   defaultModel: () => ModelRef | null;
   setDefaultModel: (model: ModelRef) => Promise<void>;
   onError: (message: string, err?: unknown) => void;
+  /** The context system; without it, chats carry no context. */
+  context?: ContextDeps;
+  /** Whether to keep the context text sent with each reply ("store full transcripts"). */
+  storeFullTranscripts?: () => boolean;
 }
 
 export interface ChatSnapshot {
@@ -28,10 +35,14 @@ export class ChatManager {
   #unsubscribe: () => void = () => {};
   #snapshot: ChatSnapshot;
   readonly #listeners = new Set<() => void>();
+  /** Chips for the open chat; null when there is no context system. */
+  readonly context: ContextController | null;
 
   constructor(private readonly deps: ManagerDeps) {
     this.#session = this.#attach(this.#blank());
+    this.context = deps.context ? new ContextController(() => this.#session, deps.context) : null;
     this.#snapshot = this.#take();
+    this.context?.activeChanged();
   }
 
   get session(): ChatSession {
@@ -50,6 +61,7 @@ export class ChatManager {
   newChat(): void {
     this.#session.stop();
     this.#switch(this.#blank());
+    this.context?.activeChanged();
   }
 
   async open(id: string): Promise<boolean> {
@@ -60,6 +72,7 @@ export class ChatManager {
     }
     this.#session.stop();
     this.#switch(chat);
+    await this.context?.restore();
     return true;
   }
 
@@ -93,7 +106,7 @@ export class ChatManager {
 
   #blank(): Chat {
     const now = this.deps.clock.now();
-    return { id: this.deps.newId(), title: '', createdAt: now, updatedAt: now, model: this.deps.defaultModel(), messages: [] };
+    return { id: this.deps.newId(), title: '', createdAt: now, updatedAt: now, model: this.deps.defaultModel(), messages: [], context: EMPTY_CONTEXT };
   }
 
   #attach(chat: Chat): ChatSession {
@@ -103,6 +116,8 @@ export class ChatManager {
       newId: this.deps.newId,
       save: (c) => this.deps.history.save(c),
       onSaveError: (err) => this.deps.onError('Could not save the chat.', err),
+      ...(this.deps.context ? { prepare: (state) => prepareContext(state, this.deps.context!.index) } : {}),
+      ...(this.deps.storeFullTranscripts ? { storeFullTranscripts: this.deps.storeFullTranscripts } : {}),
     });
     this.#unsubscribe();
     this.#unsubscribe = session.subscribe(() => this.#changed());

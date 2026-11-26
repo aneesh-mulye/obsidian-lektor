@@ -183,6 +183,171 @@
   margin-top: var(--size-4-3);
 }
 
+/* Context chips */
+
+.lektor-context {
+  padding: var(--size-4-2) var(--size-4-2) 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.lektor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-2-2);
+}
+
+.lektor-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  max-width: 100%;
+  padding: 0 var(--size-2-1) 0 var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  --icon-size: var(--icon-xs);
+}
+
+.lektor-chip.is-current {
+  border-style: dashed;
+}
+
+.lektor-chip .clickable-icon {
+  padding: var(--size-2-1);
+}
+
+.lektor-chip-main {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--size-2-2);
+  min-width: 0;
+}
+
+.lektor-chip-name {
+  max-width: 12em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lektor-chip-tokens {
+  color: var(--text-faint);
+}
+
+.lektor-chip-changed {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-orange);
+}
+
+.lektor-chip-depth {
+  height: auto;
+  padding: 0 var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.lektor-chip-offer {
+  height: auto;
+  padding: var(--size-2-1) var(--size-4-1);
+  border-style: dashed;
+  background: none;
+  box-shadow: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.lektor-token-total {
+  margin-left: auto;
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.lektor-token-total.is-warn {
+  color: var(--color-orange);
+}
+
+.lektor-token-total.is-over {
+  color: var(--text-error);
+}
+
+.lektor-context-note {
+  margin-top: var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.lektor-context-warning {
+  margin-top: var(--size-2-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-warning);
+}
+
+.lektor-depth-menu {
+  position: absolute;
+  bottom: calc(100% + var(--size-2-2));
+  left: 0;
+  z-index: var(--layer-popover);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  width: max-content;
+  max-width: min(22em, 80vw);
+  padding: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-s);
+}
+
+.lektor-depth-head {
+  color: var(--text-muted);
+  margin-bottom: var(--size-2-1);
+}
+
+.lektor-depth-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 0 var(--size-4-2);
+  height: auto;
+  padding: var(--size-2-2) var(--size-4-2);
+  text-align: left;
+  font-size: var(--font-ui-smaller);
+  background: none;
+  box-shadow: none;
+}
+
+.lektor-depth-row.is-active {
+  outline: 1px solid var(--interactive-accent);
+}
+
+.lektor-depth-row.is-over {
+  color: var(--color-orange);
+}
+
+.lektor-depth-level {
+  font-weight: var(--font-semibold);
+}
+
+.lektor-depth-excluded {
+  color: var(--text-faint);
+}
+
+.lektor-depth-backlinks {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-1);
+  margin-top: var(--size-2-2);
+}
+
 /* Composer */
 
 .lektor-composer {
@@ -190,7 +355,6 @@
   align-items: flex-end;
   gap: var(--size-4-1);
   padding: var(--size-4-2);
-  border-top: 1px solid var(--background-modifier-border);
 }
 
 .lektor-input {

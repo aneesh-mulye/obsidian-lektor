@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { type Chip, EMPTY_CONTEXT } from '../context/state';
 import type { ModelRef } from '../providers/types';
 import { ModelRefSchema } from '../settings';
 import type { Storage } from '../storage';
@@ -20,6 +21,13 @@ const UserMessage = z.strictObject({
   createdAt: z.number(),
 });
 
+const Manifest = z.strictObject({
+  notes: z.array(z.strictObject({ path: z.string(), hash: z.string() })),
+  selections: z.array(z.strictObject({ path: z.string(), hash: z.string() })),
+  backlinkLists: z.number(),
+  excluded: z.number(),
+});
+
 const AssistantMessage = z.strictObject({
   id: z.string(),
   role: z.literal('assistant'),
@@ -30,9 +38,37 @@ const AssistantMessage = z.strictObject({
   model: ModelRefSchema,
   createdAt: z.number(),
   usage: z.strictObject({ inputTokens: z.number().optional(), outputTokens: z.number().optional() }).optional(),
+  context: Manifest.optional(),
+  promptEstimate: z.number().optional(),
+  contextHash: z.string().optional(),
+  notice: z.string().optional(),
 });
 
-const ChatSchema = z.strictObject({
+/** Chips as stored: selections are a path, range and hash, never text (INVARIANTS.md H4). */
+const ChipRecord = z.discriminatedUnion('kind', [
+  z.strictObject({
+    kind: z.literal('note'),
+    id: z.string(),
+    path: z.string(),
+    depth: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]),
+    backlinkContents: z.boolean(),
+    current: z.boolean(),
+    lastHash: z.string().optional(),
+  }),
+  z.strictObject({ kind: z.literal('folder'), id: z.string(), path: z.string(), recursive: z.boolean() }),
+  z.strictObject({
+    kind: z.literal('selection'),
+    id: z.string(),
+    path: z.string(),
+    from: z.int().min(0),
+    to: z.int().min(0),
+    hash: z.string(),
+  }),
+]);
+
+const ContextRecord = z.strictObject({ followActive: z.boolean(), chips: z.array(ChipRecord) });
+
+const ChatV1 = z.strictObject({
   id: z.string(),
   title: z.string(),
   createdAt: z.number(),
@@ -41,11 +77,31 @@ const ChatSchema = z.strictObject({
   messages: z.array(z.discriminatedUnion('role', [UserMessage, AssistantMessage])),
 });
 
-const FileSchema = z.strictObject({
-  format: z.literal('lektor-chat'),
-  version: z.literal(1),
-  chat: ChatSchema,
+const ChatV2 = ChatV1.extend({
+  context: ContextRecord,
+  sentContext: z.record(z.string(), z.string()).optional(),
 });
+
+const FileSchema = z.discriminatedUnion('version', [
+  z.strictObject({ format: z.literal('lektor-chat'), version: z.literal(1), chat: ChatV1 }),
+  z.strictObject({ format: z.literal('lektor-chat'), version: z.literal(2), chat: ChatV2 }),
+]);
+
+/** What is written to disk: selection text and "changed" marks are left out. */
+function toRecord(chat: Chat): unknown {
+  const chips = chat.context.chips.map((c): unknown => {
+    if (c.kind === 'selection') {
+      const { text: _text, ...rest } = c;
+      return rest;
+    }
+    if (c.kind === 'note') {
+      const { changed: _changed, ...rest } = c;
+      return rest;
+    }
+    return c;
+  });
+  return { ...chat, context: { followActive: chat.context.followActive, chips } };
+}
 
 export interface ChatSummary {
   id: string;
@@ -60,7 +116,7 @@ export class ChatHistory {
 
   /** Rejects with StorageError if the chat id is not a valid storage key. */
   async save(chat: Chat): Promise<void> {
-    await this.storage.write('chats', chat.id, JSON.stringify({ format: 'lektor-chat', version: 1, chat }));
+    await this.storage.write('chats', chat.id, JSON.stringify({ format: 'lektor-chat', version: 2, chat: toRecord(chat) }));
   }
 
   /** The chat, or null if it is missing or unreadable. A reply saved mid-stream loads as stopped. */
@@ -103,7 +159,8 @@ export class ChatHistory {
     }
     const parsed = FileSchema.safeParse(value);
     if (!parsed.success || parsed.data.chat.id !== id) return null;
-    const chat = parsed.data.chat as Chat;
+    const file = parsed.data;
+    const chat = (file.version === 1 ? { ...file.chat, context: EMPTY_CONTEXT } : { ...file.chat, context: { ...file.chat.context, chips: file.chat.context.chips as Chip[] } }) as Chat;
     return {
       ...chat,
       messages: chat.messages.map((m) => (m.role === 'assistant' && m.status === 'streaming' ? { ...m, status: 'stopped' } : m)),

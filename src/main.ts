@@ -1,49 +1,136 @@
 // SPDX-FileCopyrightText: 2026 Aneesh Mulye
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { Notice, Plugin } from 'obsidian';
+import { Notice, Plugin, debounce } from 'obsidian';
 import { ChatHistory } from './core/chat/history';
 import { ChatManager } from './core/chat/manager';
+import type { Depth } from './core/context/state';
 import { OllamaProvider } from './core/providers/ollama';
 import type { ChatProvider } from './core/providers/types';
 import { SettingsStore } from './core/settings';
 import { confirm } from './obsidian/ConfirmModal';
+import { ContextBroker } from './obsidian/ContextBroker';
 import { FetchHttpClient } from './obsidian/Http';
 import { LektorView, VIEW_TYPE_LEKTOR } from './obsidian/LektorView';
+import { FolderPicker, NotePicker } from './obsidian/Pickers';
 import { PluginStorage } from './obsidian/PluginStorage';
 import { LektorSettingTab } from './obsidian/SettingsTab';
+import type { ContextUi } from './obsidian/ui/ContextBar';
 
 export default class LektorPlugin extends Plugin {
   // Not `settings`: Obsidian 1.13+ declares Plugin.settings for raw loaded data.
   settingsStore: SettingsStore = SettingsStore.load(null);
   ollama!: OllamaProvider;
   private chats!: ChatManager;
+  private broker!: ContextBroker;
 
   override async onload(): Promise<void> {
     this.settingsStore = SettingsStore.load(await this.loadData());
     if (this.settingsStore.problems.length > 0) {
       new Notice('Lektor: some saved settings could not be read. Open Settings → Lektor to review them.');
     }
+    const settings = () => this.settingsStore.settings;
+    const notice = (message: string) => new Notice(`Lektor: ${message}`);
 
     const http = new FetchHttpClient();
-    this.ollama = new OllamaProvider(http, () => this.settingsStore.settings.models.ollama.baseUrl);
+    this.ollama = new OllamaProvider(http, () => settings().models.ollama.baseUrl, () => settings().models.ollama.contextLength);
     const providers: ChatProvider[] = [this.ollama];
     const byId = new Map(providers.map((p) => [p.id, p]));
+
+    this.broker = new ContextBroker(this.app, {
+      patterns: () => settings().context.excludedFolders,
+      respectObsidian: () => settings().context.respectObsidianExclusions,
+    });
 
     this.chats = new ChatManager({
       providers: { get: (id) => byId.get(id) },
       clock: { now: () => Date.now() },
       newId: () => crypto.randomUUID(),
       history: new ChatHistory(new PluginStorage(this.app, this.manifest.dir)),
-      defaultModel: () => (this.settingsStore.settings.models.defaultModel) ?? null,
+      defaultModel: () => settings().models.defaultModel ?? null,
       setDefaultModel: async (model) => {
         if (this.settingsStore.update({ models: { defaultModel: model } }).ok) await this.saveSettings();
       },
       onError: (message, err) => {
         if (err !== undefined) console.error(`Lektor: ${message}`, err);
-        new Notice(`Lektor: ${message}`);
+        notice(message);
       },
+      context: {
+        index: this.broker.index,
+        activeNote: () => this.broker.activeNote(),
+        newId: () => crypto.randomUUID(),
+        maxDepth: () => settings().context.maxLinkDepth as Depth,
+        onNotice: notice,
+      },
+      storeFullTranscripts: () => settings().privacy.storeFullTranscripts,
     });
+    const context = this.chats.context!;
+
+    // Keep the index and the chips in step with the vault.
+    this.broker.watch(
+      this,
+      () => context.vaultChanged(),
+      (from, to) => {
+        this.broker.refresh();
+        context.renamed(from, to);
+      },
+    );
+    this.app.workspace.onLayoutReady(() => {
+      this.broker.refresh();
+      context.vaultChanged();
+    });
+
+    // The current-note chip and the "Add selection" offer.
+    let offer: { path: string; length: number } | null = null;
+    const offerListeners = new Set<() => void>();
+    const updateOffer = () => {
+      const next = this.broker.selectionInfo();
+      if (next?.path !== offer?.path || next?.length !== offer?.length) {
+        offer = next;
+        for (const l of offerListeners) l();
+      }
+    };
+    this.registerEvent(
+      this.app.workspace.on('file-open', () => {
+        context.activeChanged();
+        updateOffer();
+      }),
+    );
+    this.registerDomEvent(document, 'selectionchange', debounce(updateOffer, 150, true));
+
+    const addSelection = async () => {
+      const selection = await this.broker.selection();
+      if (selection) context.addSelection(selection);
+      else notice('Select some text in a note first. (Notes in excluded folders cannot be added.)');
+    };
+    const pickNote = (picked?: () => void) =>
+      new NotePicker(this.app, this.broker.index.notes(), (n) => {
+        context.addNote(n.path);
+        picked?.();
+      }).open();
+    const pickFolder = () => new FolderPicker(this.app, this.broker.index.folders(), (f) => context.addFolder(f, false)).open();
+
+    const contextUi: ContextUi = {
+      controller: context,
+      index: { subscribe: this.broker.subscribe, version: this.broker.version },
+      selection: {
+        subscribe: (l) => {
+          offerListeners.add(l);
+          return () => offerListeners.delete(l);
+        },
+        get: () => offer,
+      },
+      pickNote,
+      pickFolder,
+      addSelection: () => void addSelection(),
+      drop: () => {
+        const dropped = this.broker.dropped();
+        for (const n of dropped.notes) context.addNote(n);
+        for (const f of dropped.folders) context.addFolder(f, false);
+        if (dropped.excluded > 0) notice(`${dropped.excluded} excluded item${dropped.excluded === 1 ? ' was' : 's were'} not added.`);
+      },
+      maxDepth: () => settings().context.maxLinkDepth as Depth,
+    };
 
     const clearAllChats = async () => {
       const ok = await confirm(this.app, {
@@ -54,7 +141,7 @@ export default class LektorPlugin extends Plugin {
       if (ok) await this.chats.clearAll();
     };
 
-    this.registerView(VIEW_TYPE_LEKTOR, (leaf) => new LektorView(leaf, { manager: this.chats, providers, clearAllChats }));
+    this.registerView(VIEW_TYPE_LEKTOR, (leaf) => new LektorView(leaf, { manager: this.chats, providers, clearAllChats, context: contextUi }));
     this.addRibbonIcon('message-square', 'Open Lektor', () => void this.activateView());
     this.addCommand({ id: 'open-sidebar', name: 'Open sidebar', callback: () => void this.activateView() });
     this.addCommand({
@@ -66,6 +153,18 @@ export default class LektorPlugin extends Plugin {
       },
     });
     this.addCommand({ id: 'clear-all-chats', name: 'Clear all chats', callback: () => void clearAllChats() });
+    this.addCommand({
+      id: 'add-selection',
+      name: 'Add selection to context',
+      checkCallback: (checking) => {
+        if (this.broker.selectionInfo() === null) return false;
+        if (!checking) void addSelection().then(() => this.activateView());
+        return true;
+      },
+    });
+    this.addCommand({ id: 'add-current-note', name: 'Add current note to context', callback: () => context.addActiveNote() });
+    this.addCommand({ id: 'add-note', name: 'Add note to context…', callback: () => pickNote() });
+    this.addCommand({ id: 'add-folder', name: 'Add folder to context…', callback: pickFolder });
     this.addSettingTab(new LektorSettingTab(this.app, this));
   }
 
@@ -75,6 +174,13 @@ export default class LektorPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settingsStore.toData());
+  }
+
+  /** Exclusion or link-depth settings changed: rebuild the index and re-check every chip. */
+  contextSettingsChanged(): void {
+    this.broker.refresh();
+    this.chats.context?.vaultChanged();
+    this.chats.context?.settingsChanged();
   }
 
   /** For the settings tab's connection check. */

@@ -21,7 +21,7 @@ function provider(hang = false): ChatProvider {
   return {
     id: 'fake',
     label: 'Fake',
-    capabilities: () => Promise.resolve({ toolCalling: 'none', nativeWebSearch: false, images: false, contextWindow: 1 }),
+    capabilities: () => Promise.resolve({ toolCalling: 'none', nativeWebSearch: false, images: false, contextWindow: 32768 }),
     listModels: () => Promise.resolve([]),
     async *stream(): AsyncGenerator<ChatEvent> {
       await Promise.resolve();

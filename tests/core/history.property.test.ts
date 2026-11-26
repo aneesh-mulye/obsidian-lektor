@@ -7,6 +7,7 @@ import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { ChatHistory } from '../../src/core/chat/history';
 import type { AssistantMessage, Chat, Message } from '../../src/core/chat/types';
+import { type Chip, EMPTY_CONTEXT } from '../../src/core/context/state';
 import { type Storage, StorageError, type StorageNamespace, isStorageKey } from '../../src/core/storage';
 
 /** In-memory Storage with the same key rules as PluginStorage. */
@@ -59,19 +60,74 @@ const message: fc.Arbitrary<Message> = fc.oneof(
     )
     .map((m) => m as AssistantMessage),
 );
-const chat = (chatId: string): fc.Arbitrary<Chat> =>
-  fc.record({
-    id: fc.constant(chatId),
-    title: text,
-    createdAt: fc.nat(),
-    updatedAt: fc.nat({ max: 50 }),
-    model: fc.option(ref, { nil: null }),
-    messages: fc.array(message, { maxLength: 5 }),
-  });
+/** Selection text and sentContext values may carry this token; nothing else does. */
+const SECRET = 'QQSENTQQ';
 
+const chip: fc.Arbitrary<Chip> = fc.oneof(
+  fc
+    .record(
+      {
+        kind: fc.constant('note' as const),
+        id: fc.uuid(),
+        path: fc.string({ minLength: 1 }),
+        depth: fc.constantFrom(0 as const, 1 as const, 2 as const, 3 as const),
+        backlinkContents: fc.boolean(),
+        current: fc.boolean(),
+        lastHash: fc.stringMatching(/^[0-9a-f]{64}$/),
+        changed: fc.boolean(),
+      },
+      { requiredKeys: ['kind', 'id', 'path', 'depth', 'backlinkContents', 'current'] },
+    )
+    .map((c) => c as Chip),
+  fc.record({ kind: fc.constant('folder' as const), id: fc.uuid(), path: fc.string({ minLength: 1 }), recursive: fc.boolean() }),
+  fc
+    .record(
+      {
+        kind: fc.constant('selection' as const),
+        id: fc.uuid(),
+        path: fc.string({ minLength: 1 }),
+        from: fc.nat(),
+        to: fc.nat(),
+        hash: fc.stringMatching(/^[0-9a-f]{64}$/),
+        text: fc.oneof(text, fc.constant(`picked ${SECRET} words`)),
+      },
+      { requiredKeys: ['kind', 'id', 'path', 'from', 'to', 'hash'] },
+    )
+    .map((c) => c as Chip),
+);
+
+const chat = (chatId: string): fc.Arbitrary<Chat> =>
+  fc
+    .record({
+      id: fc.constant(chatId),
+      title: text,
+      createdAt: fc.nat(),
+      updatedAt: fc.nat({ max: 50 }),
+      model: fc.option(ref, { nil: null }),
+      messages: fc.array(message, { maxLength: 5 }),
+      context: fc.record({ followActive: fc.boolean(), chips: fc.array(chip, { maxLength: 4 }) }),
+      sentContext: fc.option(fc.dictionary(fc.string(), fc.oneof(text, fc.constant(`ctx ${SECRET}`)), { maxKeys: 3 }), { nil: undefined }),
+    })
+    .map(({ sentContext, ...c }) => (sentContext === undefined ? c : { ...c, sentContext }));
+
+/** What a load gives back: mid-stream replies as stopped; selection text and "changed" marks never stored. */
 const normalised = (c: Chat): Chat => ({
   ...c,
   messages: c.messages.map((m) => (m.role === 'assistant' && m.status === 'streaming' ? { ...m, status: 'stopped' } : m)),
+  context: {
+    ...c.context,
+    chips: c.context.chips.map((x): Chip => {
+      if (x.kind === 'selection') {
+        const { text: _t, ...rest } = x;
+        return rest;
+      }
+      if (x.kind === 'note') {
+        const { changed: _c, ...rest } = x;
+        return rest;
+      }
+      return x;
+    }),
+  },
 });
 
 const junk = (chatId: string) =>
@@ -147,6 +203,25 @@ describe('ChatHistory (INVARIANTS.md H1–H3)', () => {
 
   it('H3: refuses to save a chat whose id is not a storage key', async () => {
     const history = new ChatHistory(new MemStorage());
-    await expect(history.save({ id: '../x', title: '', createdAt: 0, updatedAt: 0, model: null, messages: [] })).rejects.toBeInstanceOf(StorageError);
+    await expect(history.save({ id: '../x', title: '', createdAt: 0, updatedAt: 0, model: null, messages: [], context: EMPTY_CONTEXT })).rejects.toBeInstanceOf(StorageError);
+  });
+
+  it('H4: note text reaches the file only as stored full-transcript context', async () => {
+    await fc.assert(
+      fc.asyncProperty(chat('a1'), async (c) => {
+        const storage = new MemStorage();
+        await new ChatHistory(storage).save(c);
+        const file = storage.files.get('chats/a1')!;
+        const kept = Object.values(c.sentContext ?? {}).some((v) => v.includes(SECRET));
+        expect(file.includes(SECRET)).toBe(kept);
+      }),
+    );
+  });
+
+  it('loads a version-1 file with an empty context', async () => {
+    const storage = new MemStorage();
+    const v1 = { id: 'a1', title: 't', createdAt: 1, updatedAt: 2, model: null, messages: [] };
+    storage.files.set('chats/a1', JSON.stringify({ format: 'lektor-chat', version: 1, chat: v1 }));
+    expect(await new ChatHistory(storage).load('a1')).toEqual({ ...v1, context: EMPTY_CONTEXT });
   });
 });

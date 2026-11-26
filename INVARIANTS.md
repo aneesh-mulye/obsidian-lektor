@@ -196,7 +196,7 @@ Regression tests from failing seeds or surviving mutants so far: `tests/core/set
 `tests/core/ollama.property.test.ts`
 
 - **Generator:** any configured base URL (valid `http`/`https`) × any model name × any message list.
-- **Property:** every request goes to `<baseUrl>/api/<endpoint>` and nowhere else. The `/api/chat` body is exactly `{model, messages, stream: true}`, plus `think` only when the model reports the `thinking` capability. Each message is exactly `{role, content}` and equals the input.
+- **Property:** every request goes to `<baseUrl>/api/<endpoint>` and nowhere else. The `/api/chat` body is exactly `{model, messages, stream: true, options: {num_ctx}}`, plus `think` only when the model reports the `thinking` capability. `num_ctx` is the configured context length capped at the model's maximum. Each message is exactly `{role, content}` and equals the input.
 - **Counterexample means:** data reaches a host the user didn't configure, or the request carries something the user didn't send.
 
 ### C1–C5. Chat session (stateful) — active
@@ -233,12 +233,96 @@ Regression tests from failing seeds or surviving mutants so far: `tests/core/set
 - **Property:** loading gives version 2 with every v1 field unchanged, the new `models` section at its defaults, no problems, and exclusions still intact.
 - **Counterexample means:** upgrading Lektor resets or reports a user's settings.
 
+## Milestone 3: Context
+
+Shared generator, the **random vault**: 1–25 Markdown notes in nested folders (including folders named like the exclusion patterns, mixed case, hidden folders, `.lektor/` and the config folder), random outgoing links (with cycles, self-links, links to missing notes and to non-Markdown files), random excluded-folder patterns and Obsidian exclusion filters, and the "respect Obsidian's excluded files" toggle. Every note body carries a unique sentinel token, and its stored size is its UTF-8 byte length.
+
+### X1. Exclusion matching is fail-closed — active
+
+`tests/core/exclusions.property.test.ts`
+
+- **Generator:** random paths and random pattern lists (bare names, anchored paths, globs, trailing slashes, mixed case), Obsidian filters (prefixes and `/regex/`), and invalid patterns.
+- **Properties:**
+  - **Closed under descendants:** if a folder or path is excluded, so is everything below it.
+  - **Monotonic:** adding a pattern never un-excludes anything.
+  - **Case-blind:** changing the ASCII case of a path never changes the result.
+  - **Hard exclusions:** hidden segments, the config folder and `.lektor/` are always excluded.
+  - **Bare names:** a bare name excludes exactly the paths with a segment of that name (ignoring case).
+  - **Fail-closed:** an invalid pattern, or the unreadable-list sentinel `**`, excludes everything.
+- **Counterexample means:** a note the user excluded can still reach a model.
+
+### X2. Context containment (design invariant 1, milestone 3 part; stateful) — active
+
+`tests/core/context.property.test.ts`, `fc.commands`
+
+- **Generator:** a random vault and a random sequence of context actions: add or remove a note, folder (recursive or not) or selection; set link depth 0–3; toggle backlink contents; pin; toggle following; change the active note; edit exclusion patterns; flip the Obsidian toggle; and add, delete or rename notes. After each action the context is assembled and rendered exactly as a request would be.
+- **Model:** an independent breadth-first walk over the raw graph that never enters an excluded note, plus the folder and backlink rules.
+- **Property:** the rendered context contains a note's sentinel **if and only if** the model says that note's content is in context. It never contains an excluded note's sentinel. The excluded-note count shown to the user equals the model's. A selection appears only while its source note is not excluded.
+- **Counterexample means:** the model sees a note the user did not give it, or doesn't see one they did (hard rule 2).
+
+### X3. Backlink lists carry no content (design invariant 2) — active
+
+`tests/core/context.property.test.ts`
+
+- **Generator:** the X2 generator with backlink contents off for every chip.
+- **Property:** every note that appears only as a backlink appears by path and title, and none of its sentinel appears. Each list has at most 50 entries plus a "+N more" line whose N is exact.
+- **Counterexample means:** "list only" silently shares note text.
+
+### X4. The link-depth preview matches what is sent — active
+
+`tests/core/context.property.test.ts`
+
+- **Generator:** a random vault, a note chip, and a depth 0–3 with backlink contents on or off.
+- **Property:** the preview's note count, token estimate, backlinks-listed count and excluded count, computed from metadata alone, equal those of the context actually assembled for that chip at that depth.
+- **Counterexample means:** the menu promises one thing and Lektor sends another.
+
+### X5. Rendering is exact and unambiguous — active
+
+`tests/core/render.property.test.ts`
+
+- **Generator:** assembled contexts whose note contents and selections contain arbitrary text, including the rendering's own markers, near-miss boundary tokens and paths with quotes and newlines.
+- **Property:** an independent parser recovers from the rendered message exactly the list of notes (path and content), backlink lists and selections that went in.
+- **Counterexample means:** note text could forge another note's boundary (a prompt-injection foothold), or content is altered on its way to the model.
+
+### C6. Over-budget requests are never sent — active
+
+`tests/core/session.property.test.ts`
+
+- **Generator:** the C1–C5 stateful run, with random context sizes and random context windows, and with usage reports that calibrate the estimate.
+- **Property:** a request reaches the provider only if its calibrated estimate plus the reply reserve fits the window. Otherwise the reply fails with an explanation and the provider is not called. Every request is exactly the context message (if any) followed by the C1 transcript.
+- **Counterexample means:** Ollama silently truncates the start of the prompt, so the model loses context the user gave it.
+
+### H4. History never stores note text, unless full transcripts are on — active
+
+`tests/core/history.property.test.ts`
+
+- **Generator:** chats whose context comes from a random vault with sentinel tokens, saved with "store full transcripts" off or on.
+- **Property:** with the setting off, no saved file contains any sentinel, and selections are stored as path, range and hash only. With it on, the context text sent with each reply can be recovered exactly. Restoring a chat drops chips for deleted or now-excluded notes, and selections whose text changed, each with a notice.
+- **Counterexample means:** a deleted or private note survives in chat history (DESIGN.md § Privacy guarantees).
+
+### S7. Settings v2 migrate to v3 losslessly — active
+
+`tests/core/settings.property.test.ts`
+
+- **Generator:** any valid version-1 or version-2 settings.
+- **Property:** loading gives version 3, keeps every existing field, and sets the new fields to their defaults (`models.ollama.contextLength` 32,768, `context.respectObsidianExclusions` on). It reports no problems.
+
+### Checked in a real Obsidian (milestone 3)
+
+On 2026-11-26, against a copy of `fixtures/vault` in a separate Obsidian 1.15.1 instance (own profile folder, debugging on 127.0.0.1 only), driven with Playwright, and with the real request to Ollama captured on its way out:
+
+- At depth 1 the request contained exactly `Drafts/Essay`, `Reference/Chain A` and `Reference/Sources`, with their backlink lists. Neither the `PRIVATE-SENTINEL` (Lektor-excluded `Private/`) nor the `TEMPLATE-SENTINEL` (Obsidian-excluded `Templates/`) was in it. "2 excluded notes skipped" was shown, `num_ctx` was 65536, and the model answered from the note.
+- Following and pinning the current note, opening an excluded note (no chip), the "Add selection" offer, `@`-mentions, dropping an allowed and an excluded note, a new chat, and reopening a chat with all chips (selection included) restored all behaved as specified.
+- The saved chat file held paths, ranges and hashes only: no note text.
+
+The user's own Obsidian profile was hashed before and after and was unchanged.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.
 
-1. **Context containment:** planned (M3, extended in M7).
-2. **Backlink lists carry no content:** planned (M3).
+1. **Context containment:** active for milestone 3's sources as X2; extended to `request_context` and attachments in M7.
+2. **Backlink lists carry no content:** active as X3.
 3. **No write without accept:** planned (M5).
 4. **Hunk algebra:** planned (M5).
 5. **Rebase honesty:** planned (M6).
@@ -249,7 +333,7 @@ These come from `docs/DESIGN.md` § Testing. Each gets a full generator, propert
 10. **Lockdown flags are unconditional:** planned (M10, M11).
 11. **Preset parsing is total:** planned (M8).
 
-Also planned: **link-depth preview matches what is sent** (M3; DESIGN.md § Context system).
+Also from the design: **link-depth preview matches what is sent**, active as X4.
 
 ---
 

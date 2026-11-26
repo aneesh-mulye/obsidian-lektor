@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 
-export const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 3;
 
 /** The effective exclusion list while the stored one is unreadable. */
 export const EXCLUDE_EVERYTHING: readonly string[] = Object.freeze(['**']);
@@ -79,7 +79,11 @@ export const ModelRefSchema = z.strictObject({
 
 const SECTIONS = {
   models: z.strictObject({
-    ollama: z.strictObject({ baseUrl: BaseUrl }),
+    ollama: z.strictObject({
+      baseUrl: BaseUrl,
+      /** Sent as num_ctx on every request, and the budget requests are checked against. */
+      contextLength: z.int().min(2048).max(1048576),
+    }),
     /** The model last picked in the sidebar; new chats start with it. */
     defaultModel: ModelRefSchema.nullable(),
   }),
@@ -90,6 +94,8 @@ const SECTIONS = {
     attachmentMode: z.enum(ATTACHMENT_MODES),
     excludedFolders: ExcludedFolders,
     maxLinkDepth: count(3),
+    /** Also treat Obsidian's own "Excluded files" as excluded. */
+    respectObsidianExclusions: z.boolean(),
   }),
   tools: z.strictObject({
     searchesPerMessage: Cap,
@@ -120,9 +126,9 @@ export type ReadonlySettings = DeepReadonly<Settings>;
 
 export const DEFAULT_SETTINGS: Settings = deepFreeze({
   version: SETTINGS_VERSION,
-  models: { ollama: { baseUrl: 'http://127.0.0.1:11434' }, defaultModel: null },
+  models: { ollama: { baseUrl: 'http://127.0.0.1:11434', contextLength: 32768 }, defaultModel: null },
   review: { defaultDisplayMode: 'sidebar' },
-  context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3 },
+  context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3, respectObsidianExclusions: true },
   tools: { searchesPerMessage: 5, fetchesPerMessage: 5 },
   privacy: { storeFullTranscripts: false },
 });
@@ -134,8 +140,33 @@ export const DEFAULT_SETTINGS: Settings = deepFreeze({
  */
 const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string, unknown>> = {
   // 1 → 2: the models section (Ollama URL, last-picked model) was added.
-  1: (raw) => ({ ...raw, version: 2, ...(Object.hasOwn(raw, 'models') ? {} : { models: clone(DEFAULT_SETTINGS.models) }) }),
+  1: (raw) => ({
+    ...raw,
+    version: 2,
+    ...(Object.hasOwn(raw, 'models') ? {} : { models: { ollama: { baseUrl: DEFAULT_SETTINGS.models.ollama.baseUrl }, defaultModel: null } }),
+  }),
+  // 2 → 3: the Ollama context length and the "respect Obsidian's excluded files" toggle were added.
+  2: (raw) => {
+    const out: Record<string, unknown> = { ...raw, version: 3 };
+    if (Object.hasOwn(raw, 'models')) {
+      out['models'] = mapField(raw['models'], 'ollama', (o) => addMissing(o, 'contextLength', DEFAULT_SETTINGS.models.ollama.contextLength));
+    }
+    if (Object.hasOwn(raw, 'context')) {
+      out['context'] = addMissing(raw['context'], 'respectObsidianExclusions', DEFAULT_SETTINGS.context.respectObsidianExclusions);
+    }
+    return out;
+  },
 };
+
+/** A copy of `obj` with `key` added, if obj is an object lacking it; otherwise obj unchanged (salvage reports anything wrong). */
+function addMissing(obj: unknown, key: string, value: unknown): unknown {
+  return isRecord(obj) && !Object.hasOwn(obj, key) ? { ...obj, [key]: value } : obj;
+}
+
+/** A copy of `obj` with `obj[key]` transformed, if obj is an object with that key; otherwise obj unchanged. */
+function mapField(obj: unknown, key: string, fn: (v: unknown) => unknown): unknown {
+  return isRecord(obj) && Object.hasOwn(obj, key) ? { ...obj, [key]: fn(obj[key]) } : obj;
+}
 
 // ---------------------------------------------------------------------------
 // Store

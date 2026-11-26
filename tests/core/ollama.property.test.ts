@@ -190,7 +190,7 @@ describe('OllamaProvider.stream (INVARIANTS.md O1)', () => {
   it('O1: exactly one done, last; events match the server; never throws', async () => {
     await fc.assert(
       fc.asyncProperty(script, async (s) => {
-        const provider = new OllamaProvider(new FakeHttp(s), () => 'http://127.0.0.1:11434');
+        const provider = new OllamaProvider(new FakeHttp(s), () => 'http://127.0.0.1:11434', () => 32768);
         const { events } = await run(provider, [{ role: 'user', content: 'hi' }], null);
         expect(events.map(shape)).toEqual(expectedEvents(s));
       }),
@@ -200,7 +200,7 @@ describe('OllamaProvider.stream (INVARIANTS.md O1)', () => {
   it('O1: after an abort, the only further event is done: aborted', async () => {
     await fc.assert(
       fc.asyncProperty(script, fc.nat({ max: 20 }), async (s, k) => {
-        const provider = new OllamaProvider(new FakeHttp(s), () => 'http://127.0.0.1:11434');
+        const provider = new OllamaProvider(new FakeHttp(s), () => 'http://127.0.0.1:11434', () => 32768);
         const { events, abortedAt } = await run(provider, [{ role: 'user', content: 'hi' }], k);
         const dones = events.filter((e) => e.type === 'done');
         expect(dones).toHaveLength(1);
@@ -217,7 +217,7 @@ describe('OllamaProvider.stream (INVARIANTS.md O1)', () => {
   it('O1: an abort that lands while a read is pending (the Stop button) ends with only done: aborted', async () => {
     await fc.assert(
       fc.asyncProperty(script, fc.nat({ max: 20 }), async (s, k) => {
-        const provider = new OllamaProvider(new FakeHttp(s, true), () => 'http://127.0.0.1:11434');
+        const provider = new OllamaProvider(new FakeHttp(s, true), () => 'http://127.0.0.1:11434', () => 32768);
         const controller = new AbortController();
         const events: ChatEvent[] = [];
         let abortedAt: number | null = null;
@@ -245,7 +245,7 @@ describe('OllamaProvider.stream (INVARIANTS.md O1)', () => {
     const controller = new AbortController();
     controller.abort();
     const events: ChatEvent[] = [];
-    for await (const e of new OllamaProvider(new FakeHttp(s), () => 'http://h').stream({ model: 'm', messages: [] }, controller.signal)) events.push(e);
+    for await (const e of new OllamaProvider(new FakeHttp(s), () => 'http://h', () => 32768).stream({ model: 'm', messages: [] }, controller.signal)) events.push(e);
     expect(events).toEqual([{ type: 'done', reason: 'aborted' }]);
   });
 });
@@ -253,9 +253,9 @@ describe('OllamaProvider.stream (INVARIANTS.md O1)', () => {
 describe('OllamaProvider requests (INVARIANTS.md O2)', () => {
   it('O2: requests go only to the configured server and carry exactly the conversation', async () => {
     await fc.assert(
-      fc.asyncProperty(baseUrl, fc.string({ minLength: 1 }), fc.array(message, { maxLength: 6 }), fc.boolean(), async (base, model, messages, thinking) => {
+      fc.asyncProperty(baseUrl, fc.string({ minLength: 1 }), fc.array(message, { maxLength: 6 }), fc.boolean(), fc.integer({ min: 2048, max: 1048576 }), async (base, model, messages, thinking, ctx) => {
         const http = new FakeHttp({ status: 200, errorBody: '', lines: [{ kind: 'done' }], ending: 'close', offsets: [], requestThrows: false, thinking, showFails: false });
-        const provider = new OllamaProvider(http, () => base);
+        const provider = new OllamaProvider(http, () => base, () => ctx);
         const input = structuredClone(messages);
         for await (const _ of provider.stream({ model, messages }, new AbortController().signal)) { /* drain */ }
 
@@ -266,7 +266,15 @@ describe('OllamaProvider requests (INVARIANTS.md O2)', () => {
         }
         const chat = http.requests.find((r) => r.url === `${base}/api/chat`)!;
         const body = JSON.parse(chat.body!) as Record<string, unknown>;
-        expect(body).toEqual({ model, messages: input.map(({ role, content }) => ({ role, content })), stream: true, ...(thinking ? { think: true } : {}) });
+        // The fake server reports a context length of 8192 for every model.
+        expect(body).toEqual({
+          model,
+          messages: input.map(({ role, content }) => ({ role, content })),
+          stream: true,
+          options: { num_ctx: Math.min(ctx, 8192) },
+          ...(thinking ? { think: true } : {}),
+        });
+        expect((await provider.capabilities(model)).contextWindow).toBe(Math.min(ctx, 8192));
         const show = http.requests.find((r) => r.url === `${base}/api/show`)!;
         expect(JSON.parse(show.body!)).toEqual({ model });
       }),
@@ -277,7 +285,7 @@ describe('OllamaProvider requests (INVARIANTS.md O2)', () => {
 describe('OllamaProvider errors', () => {
   it('names the server it could not reach', async () => {
     const down: HttpClient = { request: () => Promise.reject(new TypeError('fetch failed')) };
-    const provider = new OllamaProvider(down, () => 'http://127.0.0.1:9');
+    const provider = new OllamaProvider(down, () => 'http://127.0.0.1:9', () => 32768);
     await expect(provider.listModels()).rejects.toThrow('Could not reach Ollama at http://127.0.0.1:9. Is it running?');
     const events: ChatEvent[] = [];
     for await (const e of provider.stream({ model: 'm', messages: [] }, new AbortController().signal)) events.push(e);

@@ -4,11 +4,13 @@
 /** The sidebar's three zones (DESIGN.md § UI): header, conversation, composer. */
 
 import { Menu } from 'obsidian';
-import { type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { type ChangeEvent, type KeyboardEvent, type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { ChatSummary } from '../../core/chat/history';
 import type { ChatManager } from '../../core/chat/manager';
 import type { AssistantMessage, Chat } from '../../core/chat/types';
 import type { ChatProvider } from '../../core/providers/types';
+import type { ModelRef } from '../../core/providers/types';
+import { ContextBar, type ContextUi } from './ContextBar';
 import { Icon, IconButton } from './Icon';
 import { SafeMarkdown } from './SafeMarkdown';
 
@@ -17,14 +19,47 @@ export interface SidebarProps {
   providers: readonly ChatProvider[];
   /** Asks the user to confirm, then clears every chat. */
   clearAllChats: () => Promise<void>;
+  /** The context chips; absent if the context system is unavailable. */
+  context?: ContextUi;
 }
 
-export function Sidebar({ manager, providers, clearAllChats }: SidebarProps) {
+/** The model's context window, from its capabilities (null while unknown). */
+function useWindow(providers: readonly ChatProvider[], model: ModelRef | null): number | null {
+  const [window, setWindow] = useState<number | null>(null);
+  useEffect(() => {
+    let alive = true;
+    setWindow(null);
+    const provider = model ? providers.find((p) => p.id === model.provider) : undefined;
+    if (provider && model) {
+      provider.capabilities(model.model).then(
+        (c) => alive && setWindow(c.contextWindow),
+        () => undefined,
+      );
+    }
+    return () => {
+      alive = false;
+    };
+  }, [providers, model?.provider, model?.model]);
+  return window;
+}
+
+export function Sidebar({ manager, providers, clearAllChats, context }: SidebarProps) {
   const { chat, busy } = useSyncExternalStore(manager.subscribe, manager.snapshot);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const window = useWindow(providers, chat.model);
 
   return (
-    <div className="lektor-sidebar">
+    <div
+      className="lektor-sidebar"
+      onDragOver={(e) => {
+        if (context) e.preventDefault();
+      }}
+      onDrop={(e) => {
+        if (!context) return;
+        e.preventDefault();
+        context.drop();
+      }}
+    >
       <Header
         chat={chat}
         manager={manager}
@@ -41,11 +76,13 @@ export function Sidebar({ manager, providers, clearAllChats }: SidebarProps) {
       ) : (
         <Conversation chat={chat} busy={busy} onRegenerate={() => manager.session.regenerate()} />
       )}
+      {context && <ContextBar ui={context} chat={chat} window={window} calibration={manager.session.calibration} />}
       <Composer
         busy={busy}
         canSend={chat.model !== null}
         onSend={(text) => manager.session.send(text)}
         onStop={() => manager.session.stop()}
+        {...(context ? { onMention: (done: () => void) => context.pickNote(done) } : {})}
       />
     </div>
   );
@@ -228,8 +265,23 @@ function HistoryPanel(props: { manager: ChatManager; currentId: string; onOpened
 // ---------------------------------------------------------------------------
 // Composer
 
-function Composer({ busy, canSend, onSend, onStop }: { busy: boolean; canSend: boolean; onSend: (text: string) => boolean; onStop: () => void }) {
+function Composer(props: {
+  busy: boolean;
+  canSend: boolean;
+  onSend: (text: string) => boolean;
+  onStop: () => void;
+  /** Typing "@" at the start of a word: open the note picker; `picked` removes the "@". */
+  onMention?: (picked: () => void) => void;
+}) {
+  const { busy, canSend, onSend, onStop, onMention } = props;
   const [text, setText] = useState('');
+  const onChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    const caret = e.target.selectionStart;
+    const typedAt = value.length === text.length + 1 && value[caret - 1] === '@' && (caret === 1 || /\s/.test(value[caret - 2] ?? ''));
+    setText(value);
+    if (typedAt && onMention) onMention(() => setText((v) => (v[caret - 1] === '@' ? v.slice(0, caret - 1) + v.slice(caret) : v)));
+  };
   const submit = () => {
     if (onSend(text)) setText('');
   };
@@ -247,7 +299,7 @@ function Composer({ busy, canSend, onSend, onStop }: { busy: boolean; canSend: b
         rows={3}
         placeholder={canSend ? 'Message (Enter to send, Shift+Enter for a new line)' : 'Choose a model first'}
         disabled={!canSend}
-        onChange={(e) => setText(e.target.value)}
+        onChange={onChange}
         onKeyDown={onKeyDown}
       />
       {busy ? (
