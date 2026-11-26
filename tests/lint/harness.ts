@@ -8,8 +8,25 @@ import { GATE_RULES, gateBlocks } from '../../eslint/gates.mjs';
 
 export const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
-export type Category = 'obsidian' | 'core' | 'cli' | 'context-broker' | 'review-controller' | 'plugin-storage';
-export const ALL: readonly Category[] = ['obsidian', 'core', 'cli', 'context-broker', 'review-controller', 'plugin-storage'];
+export type Category =
+  | 'obsidian'
+  | 'core'
+  | 'cli'
+  | 'context-broker'
+  | 'review-controller'
+  | 'plugin-storage'
+  | 'http'
+  | 'safe-markdown';
+export const ALL: readonly Category[] = [
+  'obsidian',
+  'core',
+  'cli',
+  'context-broker',
+  'review-controller',
+  'plugin-storage',
+  'http',
+  'safe-markdown',
+];
 
 /**
  * The test's own path classifier: the reference model for which gate applies.
@@ -19,6 +36,8 @@ export function categoryOf(path: string): Category {
   if (path === 'src/obsidian/ContextBroker.ts') return 'context-broker';
   if (path === 'src/obsidian/ReviewController.ts') return 'review-controller';
   if (path === 'src/obsidian/PluginStorage.ts') return 'plugin-storage';
+  if (path === 'src/obsidian/Http.ts') return 'http';
+  if (path === 'src/obsidian/ui/SafeMarkdown.tsx') return 'safe-markdown';
   const parts = path.split('/');
   if (parts[1] === 'core' && parts[2] === 'cli' && parts.length > 3) return 'cli';
   if (parts[1] === 'core') return 'core';

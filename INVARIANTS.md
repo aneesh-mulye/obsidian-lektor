@@ -4,7 +4,11 @@ Each invariant names its **generator** (what random inputs we throw at it), its 
 
 Status: **active** means a property test exists and runs; **planned (Mn)** means it lands with milestone *n*.
 
-Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk); "normalises -0 to 0, on load and on update" (S2, seed 1865398749 in a CI-strength run: `-0` was stored as `-0` but saved as `0`).
+Stateful tests use `fc.commands(…, { size: 'large' })`. With the default size, fast-check generates runs of about five commands (ten at most in 100 runs), too short to reach states that need four specific steps in a row. A surviving mutant in the session test showed this.
+
+Every invariant's test has been mutation-checked: each guard in the code was removed in turn, and the test had to fail. Mutants that survived led to stronger generators or extra tests. The remaining survivors are equivalent (redundant code that changes no behaviour).
+
+Regression tests from failing seeds or surviving mutants so far: `tests/core/settings.test.ts` › "does not let an unreadable list become readable through serialisation" (a mutant of the S5 guard survived the property tests because JSON never produces such a value from disk); "normalises -0 to 0, on load and on update" (S2, seed 1865398749 in a CI-strength run: `-0` was stored as `-0` but saved as `0`). `tests/core/ndjson.property.test.ts` › "returns exactly JSON.parse of each line, -0 included" (N1, seed 316671435: the test's model compared against the in-memory `-0` instead of what JSON puts on the wire; the decoder was right).
 
 ---
 
@@ -137,6 +141,97 @@ Regression tests from failing seeds or surviving mutants so far: `tests/core/set
 - **Counterexample means:** changing some unrelated setting would overwrite a corrupt exclusion list with "exclude nothing".
 
 ---
+
+## Milestone 2: Ollama chat
+
+### G7. No network, remote loading or HTML injection except in their owning files — active
+
+`tests/lint/gates.property.test.ts`
+
+- **Generator:** a random file path under `src/` × a random snippet that opens a network channel or injects markup:
+  - globals `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `WebTransport`, `RTCPeerConnection`, `Worker`, `SharedWorker`, `Image`, `Audio` and `open`, by bare, `window.`, `globalThis.`, computed or destructured reference;
+  - `navigator.sendBeacon`;
+  - importing `requestUrl` / `request` from `obsidian`;
+  - Node `http`, `https`, `net`, `tls`, `dgram`, `http2`, `dns`, `undici`;
+  - creating `img`, `iframe`, `video`, `audio`, `source`, `script`, `link`, `style`, `object`, `embed`, SVG `image`/`use` and similar elements, by `createEl`/`createElement` or JSX;
+  - setting `src` / `srcset` / `srcdoc` / `backgroundImage`, or `setAttribute('src', …)`;
+  - `dangerouslySetInnerHTML`, `innerHTML`, `outerHTML`, `insertAdjacentHTML`, `setHTMLUnsafe`, `document.write`, `createContextualFragment`, and importing `MarkdownRenderer` / `sanitizeHTMLToDom` from `obsidian`.
+- **Property:**
+  - Network APIs are allowed only in `src/obsidian/Http.ts`. Node `http` / `net` are also allowed in `src/core/cli/` (the loopback MCP server, milestones 10–11), and the other Node network modules nowhere.
+  - Remote-loading elements, `src`-style properties, `MarkdownRenderer`, `innerHTML` and the other raw-HTML APIs are allowed nowhere.
+  - `dangerouslySetInnerHTML` is allowed only in `src/obsidian/ui/SafeMarkdown.tsx`.
+- **Counterexample means:** code could contact a host the user didn't configure (DESIGN.md § Privacy guarantees). Or model output could load a remote resource (an exfiltration channel) or run script in Obsidian, which would break both hard rules.
+
+### R1. Rendered model output cannot load anything or run anything — active
+
+`tests/obsidian/markdown.property.test.ts`
+
+- **Generator:** arbitrary strings, plus adversarial Markdown built from parts:
+  - images (inline, reference-style, inside links);
+  - raw HTML (`<img onerror>`, `<iframe>`, `<script>`, `<svg onload>`, `<a href="javascript:…">`, `<style>`);
+  - links with the schemes `javascript:`, `JaVaScRiPt:`, `data:`, `vbscript:`, `file:`, `obsidian:` and `app:`, entity-encoded schemes, and control characters inside schemes;
+  - autolinks and bare URLs;
+  - tables, code spans and fences.
+- **Property:** the HTML that `renderSafeMarkdown` produces contains only allow-listed tags (text-level and block Markdown structure, with no `img` and no media) and only allow-listed attributes: `href`, `rel`, `target` and `class` on links, a `language-…` class on code, `text-align` on table cells and `start` on lists. Every `href` is `http:`, `https:` or `mailto:`. No attribute name starts with `on`.
+- **Counterexample means:** a model reply, perhaps written by a page it fetched, can make Lektor contact a server just by being displayed, or can run script inside Obsidian.
+
+### N1. NDJSON decoding is exact under any chunking — active
+
+`tests/core/ndjson.property.test.ts`
+
+- **Generator:** a list of JSON values (with non-ASCII and astral text), serialised one per line with `\n` or `\r\n` endings, random blank lines and an optional final newline, then cut into chunks at arbitrary *byte* offsets, including inside multi-byte UTF-8 characters. Some lines are deliberately malformed.
+- **Property:** the decoder yields exactly the values in order. Each malformed line yields one `bad` item at its position without disturbing its neighbours, and the decoder never throws on input.
+- **Counterexample means:** a reply is garbled or truncated depending on how the network happened to split packets.
+
+### O1. Every Ollama stream ends exactly once — active
+
+`tests/core/ollama.property.test.ts`
+
+- **Generator:** a fake HTTP client that answers with a random status code and a random sequence of NDJSON lines: content and thinking deltas, a final `done` line with a random `done_reason`, `{"error":…}` lines, malformed lines, an early close, or a thrown network error. The bytes are cut at random, and the stream is optionally aborted after a random number of events.
+- **Property:** `stream()` never throws. It yields zero or more `text`, `reasoning`, `usage` or `error` events, then exactly one `done`, and nothing after it. The concatenated `text` equals the concatenated content the server sent before the stream ended. A non-200 status or an error line yields `error` and then `done: error`. An abort yields `done: aborted`, with no text after the abort is observed. A close without a `done` line is an error, never a silent success.
+- **Counterexample means:** the UI can hang in "streaming" for ever, show a partial reply as complete, or crash on a bad response.
+
+### O2. Ollama requests carry only the conversation, only to the configured server — active
+
+`tests/core/ollama.property.test.ts`
+
+- **Generator:** any configured base URL (valid `http`/`https`) × any model name × any message list.
+- **Property:** every request goes to `<baseUrl>/api/<endpoint>` and nowhere else. The `/api/chat` body is exactly `{model, messages, stream: true}`, plus `think` only when the model reports the `thinking` capability. Each message is exactly `{role, content}` and equals the input.
+- **Counterexample means:** data reaches a host the user didn't configure, or the request carries something the user didn't send.
+
+### C1–C5. Chat session (stateful) — active
+
+`tests/core/session.property.test.ts`, `fc.commands`
+
+- **Generator:** a fake provider whose streams the test drives by hand, plus random sequences of user actions (`send`, `stop`, `regenerate`, `setModel`) and provider actions (emit text or reasoning, finish with `stop` or `length`, emit an error, end without `done`, throw, keep emitting after being aborted, fail `capabilities`).
+- **Model:** the expected transcript, with each message's role, content and status.
+- **Properties:**
+  - **C1 (the model sees exactly the transcript):** every request's `messages` equals the visible transcript before the pending reply. That means user messages plus non-empty assistant replies that are complete, stopped or cut off. Error replies and reasoning are excluded.
+  - **C2 (one stream at a time):** while a reply is streaming, `send` and `regenerate` are refused and do not call the provider. At most one stream's events are ever applied.
+  - **C3 (stop is final):** after `stop`, the stopped reply never changes again, even if the provider keeps emitting.
+  - **C4 (regenerate replaces only the last reply):** earlier messages are untouched, and the new request is the transcript before the replaced reply.
+  - **C5 (every turn ends):** after any provider behaviour (done, error, early end, throw) the session is idle and the reply has a terminal status. The last saved state equals the in-memory state.
+- **Also, fail closed:** if `capabilities()` fails, the provider's `stream` is never called and the reply shows the error.
+- **Counterexample means:** the model is sent text the user can't see, two replies interleave, a stopped reply keeps growing, or the UI is stuck.
+
+### H1–H3. Chat history store — active
+
+`tests/core/history.property.test.ts`
+
+- **Generator:** random chats (any Unicode text, any statuses), random corrupt files dropped into the chats folder, and random sequences of save, load, delete and clear.
+- **Properties:**
+  - **H1:** save then load is the identity, except that a reply saved mid-stream loads as `stopped`.
+  - **H2:** a corrupt or foreign file never breaks listing or loading other chats; it is counted as unreadable.
+  - **H3:** chat ids are valid storage keys, and after `clearAll` nothing is listed.
+- **Counterexample means:** history is lost or corrupted, or one bad file hides all chats.
+
+### S6. Settings v1 migrate to v2 losslessly — active
+
+`tests/core/settings.property.test.ts`
+
+- **Generator:** any valid version-1 settings object.
+- **Property:** loading gives version 2 with every v1 field unchanged, the new `models` section at its defaults, no problems, and exclusions still intact.
+- **Counterexample means:** upgrading Lektor resets or reports a user's settings.
 
 ## Starting list from the design doc (planned)
 

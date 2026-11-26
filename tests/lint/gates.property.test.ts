@@ -15,6 +15,8 @@ import { ALL, type Category, categoryOf, lintGates } from './harness';
 
 interface Snippet {
   code: string;
+  /** JSX: only parses in .tsx files. */
+  jsx?: boolean;
   /** Categories where this construct is allowed (no gate error). */
   allowed: readonly Category[];
   /** Categories this snippet is meaningful in (default: all). */
@@ -24,8 +26,12 @@ interface Snippet {
 const BROKER: Category = 'context-broker';
 const REVIEW: Category = 'review-controller';
 const STORAGE: Category = 'plugin-storage';
+const HTTP: Category = 'http';
+const SAFE_MD: Category = 'safe-markdown';
 const NOWHERE: readonly Category[] = [];
-const NOT_CORE: readonly Category[] = ['obsidian', BROKER, REVIEW, STORAGE];
+const NOT_CORE: readonly Category[] = ['obsidian', BROKER, REVIEW, STORAGE, HTTP, SAFE_MD];
+/** Categories with a .tsx path, where JSX snippets can be placed. */
+const JSX_CATEGORIES: readonly Category[] = ['obsidian', 'core', 'cli', SAFE_MD];
 const allBut = (...cs: Category[]) => ALL.filter((c) => !cs.includes(c));
 
 // ---------------------------------------------------------------------------
@@ -34,10 +40,29 @@ const allBut = (...cs: Category[]) => ALL.filter((c) => !cs.includes(c));
 const seg = fc.stringMatching(/^[A-Za-z][A-Za-z0-9_-]{0,10}$/);
 const ext = fc.constantFrom('ts', 'tsx');
 
-function pathIn(category: Category): fc.Arbitrary<string> {
+const NEAR_MISSES = [
+  'src/obsidian/ContextBroker.tsx',
+  'src/obsidian/ReviewController.tsx',
+  'src/obsidian/ui/ContextBroker.ts',
+  'src/obsidian/review/ReviewController.ts',
+  'src/obsidian/PluginStorage.tsx',
+  'src/obsidian/storage/PluginStorage.ts',
+  'src/obsidian/http.ts',
+  'src/obsidian/ui/Http.ts',
+  'src/obsidian/Http.tsx',
+  'src/obsidian/ui/SafeMarkdown.ts',
+  'src/obsidian/SafeMarkdown.tsx',
+  'src/obsidian/ui/SafeMarkdown2.tsx',
+  'src/obsidian/ui/x/SafeMarkdown.tsx',
+  'src/ContextBroker.ts',
+  'src/obsidian/contextbroker.ts',
+  'src/main.ts',
+];
+
+function pathIn(category: Category, tsx = false): fc.Arbitrary<string> {
   const under = (dir: string) =>
     fc
-      .tuple(fc.array(seg, { maxLength: 2 }), seg, ext)
+      .tuple(fc.array(seg, { maxLength: 2 }), seg, tsx ? fc.constant('tsx') : ext)
       .map(([dirs, name, e]) => [dir, ...dirs, `${name}.${e}`].join('/'))
       .filter((p) => categoryOf(p) === category);
   switch (category) {
@@ -47,6 +72,10 @@ function pathIn(category: Category): fc.Arbitrary<string> {
       return fc.constant('src/obsidian/ReviewController.ts');
     case 'plugin-storage':
       return fc.constant('src/obsidian/PluginStorage.ts');
+    case 'http':
+      return fc.constant('src/obsidian/Http.ts');
+    case 'safe-markdown':
+      return fc.constant('src/obsidian/ui/SafeMarkdown.tsx');
     case 'cli':
       return under('src/core/cli');
     case 'core':
@@ -56,17 +85,7 @@ function pathIn(category: Category): fc.Arbitrary<string> {
         under('src/obsidian'),
         under('src'),
         // Near-misses of the allow-listed files must get the generic gate.
-        fc.constantFrom(
-          'src/obsidian/ContextBroker.tsx',
-          'src/obsidian/ReviewController.tsx',
-          'src/obsidian/ui/ContextBroker.ts',
-          'src/obsidian/review/ReviewController.ts',
-          'src/obsidian/PluginStorage.tsx',
-          'src/obsidian/storage/PluginStorage.ts',
-          'src/ContextBroker.ts',
-          'src/obsidian/contextbroker.ts',
-          'src/main.ts',
-        ),
+        fc.constantFrom(...NEAR_MISSES.filter((p) => !tsx || p.endsWith('.tsx'))),
       );
   }
 }
@@ -75,8 +94,8 @@ function pathIn(category: Category): fc.Arbitrary<string> {
 const placed = (snippets: fc.Arbitrary<Snippet>) =>
   snippets.chain((s) =>
     fc
-      .constantFrom(...(s.applicable ?? ALL))
-      .chain(pathIn)
+      .constantFrom(...(s.applicable ?? ALL).filter((c) => !s.jsx || JSX_CATEGORIES.includes(c)))
+      .chain((c) => pathIn(c, s.jsx === true))
       .map((path) => ({ snippet: s, path })),
   );
 
@@ -312,6 +331,106 @@ const g6Resolver: fc.Arbitrary<Snippet> = fc.constantFrom('resolveStoragePath', 
   ),
 );
 
+// G7: network only in Http.ts; no remote-loading elements; raw HTML only in SafeMarkdown.tsx.
+const NET_NAMES = ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'WebTransport', 'RTCPeerConnection', 'Worker', 'SharedWorker', 'Image', 'Audio'];
+const g7Network: fc.Arbitrary<Snippet> = fc.oneof(
+  fc.constantFrom(...NET_NAMES).chain((g) =>
+    fc.constantFrom<Snippet>(
+      { code: `void ${g};`, allowed: [HTTP] },
+      { code: `void window.${g};`, allowed: [HTTP] },
+      { code: `void globalThis.${g};`, allowed: [HTTP] },
+      { code: `void self['${g}'];`, allowed: [HTTP] },
+      { code: `void window?.${g};`, allowed: [HTTP] },
+      { code: `const { ${g}: x } = globalThis;`, allowed: [HTTP] },
+    ),
+  ),
+  fc.constantFrom<Snippet>(
+    { code: "void fetch('http://127.0.0.1:11434/api/tags');", allowed: [HTTP] },
+    { code: 'const x = new XMLHttpRequest();', allowed: [HTTP] },
+    { code: 'const w = new WebSocket(u);', allowed: [HTTP] },
+    { code: 'navigator.sendBeacon(u, d);', allowed: [HTTP] },
+    { code: 'void navigator["sendBeacon"](u, d);', allowed: [HTTP] },
+    { code: 'window.open(u);', allowed: [HTTP] },
+    { code: 'open(u);', allowed: [HTTP] },
+    { code: 'const { open } = window;', allowed: [HTTP] },
+    { code: "importScripts('x.js');", allowed: [HTTP] },
+    { code: "import { requestUrl } from 'obsidian';", allowed: [HTTP] },
+    { code: "import { request as r } from 'obsidian';", allowed: [HTTP] },
+    // .src is banned even in Http.ts: nothing should load a resource by URL attribute.
+    { code: 'new Image().src = u;', allowed: NOWHERE },
+  ),
+  fc.constantFrom('http', 'node:http', 'net', 'node:net').chain((mod) =>
+    fc.constantFrom<Snippet>(
+      { code: `import http from '${mod}';`, allowed: ['cli'] },
+      { code: `import { createServer } from '${mod}';`, allowed: ['cli'] },
+      { code: `export * from '${mod}';`, allowed: ['cli'] },
+    ),
+  ),
+  fc.constantFrom('https', 'node:https', 'tls', 'node:tls', 'dgram', 'node:dgram', 'http2', 'node:http2', 'dns', 'node:dns', 'undici').chain((mod) =>
+    fc.constantFrom<Snippet>(
+      { code: `import m from '${mod}';`, allowed: NOWHERE },
+      { code: `import { request } from '${mod}';`, allowed: NOWHERE },
+    ),
+  ),
+);
+
+const LOADING_TAGS = ['img', 'iframe', 'frame', 'video', 'audio', 'source', 'track', 'picture', 'script', 'link', 'style', 'object', 'embed', 'image', 'use', 'base', 'meta', 'form', 'portal'];
+const g7Loading: fc.Arbitrary<Snippet> = fc.oneof(
+  fc.constantFrom(...LOADING_TAGS).chain((tag) =>
+    fc.constantFrom<Snippet>(
+      { code: `void document.createElement('${tag}');`, allowed: NOWHERE },
+      { code: `void el.createEl('${tag}', { cls: 'x' });`, allowed: NOWHERE },
+      { code: `void createEl('${tag.toUpperCase()}');`, allowed: NOWHERE },
+      { code: `void document.createElementNS('http://www.w3.org/2000/svg', '${tag}');`, allowed: NOWHERE },
+      { code: `void React.createElement('${tag}', {});`, allowed: NOWHERE },
+      { code: `const e = <${tag} />;`, allowed: NOWHERE, jsx: true },
+      { code: `const e = <${tag} className="x"></${tag}>;`, allowed: NOWHERE, jsx: true },
+    ),
+  ),
+  fc.constantFrom<Snippet>(
+    { code: 'el.src = u;', allowed: NOWHERE },
+    { code: 'img.srcset = u;', allowed: NOWHERE },
+    { code: "frame['srcdoc'] = h;", allowed: NOWHERE },
+    { code: 'el.style.backgroundImage = u;', allowed: NOWHERE },
+    { code: "el.setAttribute('src', u);", allowed: NOWHERE },
+    { code: "el.setAttribute('SRCSET', u);", allowed: NOWHERE },
+    { code: "el.setAttr('src', u);", allowed: NOWHERE },
+    { code: "el.setAttribute('style', 'background:url(x)');", allowed: NOWHERE },
+    { code: "void el.createEl('div', { attr: { src: u } });", allowed: NOWHERE },
+    { code: 'const e = <div srcSet={u} />;', allowed: NOWHERE, jsx: true },
+    { code: 'const e = <div style={{ backgroundImage: u }} />;', allowed: NOWHERE, jsx: true },
+  ),
+);
+
+const g7Html: fc.Arbitrary<Snippet> = fc.constantFrom<Snippet>(
+  { code: 'const e = <div dangerouslySetInnerHTML={{ __html: h }} />;', allowed: [SAFE_MD], jsx: true },
+  { code: "void React.createElement('div', { dangerouslySetInnerHTML: { __html: h } });", allowed: [SAFE_MD] },
+  { code: 'el.innerHTML = h;', allowed: NOWHERE },
+  { code: "el['innerHTML'] = h;", allowed: NOWHERE },
+  { code: 'el.outerHTML = h;', allowed: NOWHERE },
+  { code: "el.insertAdjacentHTML('beforeend', h);", allowed: NOWHERE },
+  { code: 'el.setHTMLUnsafe(h);', allowed: NOWHERE },
+  { code: 'document.write(h);', allowed: NOWHERE },
+  { code: 'document.writeln(h);', allowed: NOWHERE },
+  { code: 'void range.createContextualFragment(h);', allowed: NOWHERE },
+  { code: "import { MarkdownRenderer } from 'obsidian';", allowed: NOWHERE },
+  { code: "import { sanitizeHTMLToDom } from 'obsidian';", allowed: NOWHERE },
+);
+
+const g7Benign: fc.Arbitrary<Snippet> = fc.constantFrom<Snippet>(
+  { code: 'modal.open();', allowed: ALL },
+  { code: 'const fetched = 1;', allowed: ALL },
+  { code: 'const u = new URL(s);', allowed: ALL },
+  { code: "void el.createEl('div', { text: 'x', cls: 'y' });", allowed: ALL },
+  { code: "void el.createEl('a', { href: u, text: 'Terms' });", allowed: ALL },
+  { code: "el.setAttribute('aria-label', 'Send');", allowed: ALL },
+  { code: 'void item.source;', allowed: ALL },
+  { code: 'const e = <a href={u}>x</a>;', allowed: ALL, jsx: true },
+  { code: 'const e = <div className="x" style={{ color: "red" }} />;', allowed: ALL, jsx: true },
+  { code: 'const e = <textarea value={v} />;', allowed: ALL, jsx: true },
+  { code: 'void http.request(req);', allowed: ALL },
+);
+
 // Banned everywhere.
 const evalForms: fc.Arbitrary<Snippet> = fc.constantFrom<Snippet>(
   { code: "eval('x');", allowed: NOWHERE },
@@ -366,6 +485,22 @@ describe('lint gates (INVARIANTS.md G1–G4)', () => {
     await fc.assert(fc.asyncProperty(placed(fc.oneof(g6, g6Resolver)), holds));
   });
 
+  it('G7: network only in Http.ts', async () => {
+    await fc.assert(fc.asyncProperty(placed(g7Network), holds));
+  });
+
+  it('G7: nothing creates remote-loading elements or src-style attributes', async () => {
+    await fc.assert(fc.asyncProperty(placed(g7Loading), holds));
+  });
+
+  it('G7: raw HTML only in SafeMarkdown.tsx, MarkdownRenderer nowhere', async () => {
+    await fc.assert(fc.asyncProperty(placed(g7Html), holds));
+  });
+
+  it('G7: ordinary UI code is not caught', async () => {
+    await fc.assert(fc.asyncProperty(placed(g7Benign), holds));
+  });
+
   it('eval and friends are banned everywhere', async () => {
     await fc.assert(fc.asyncProperty(placed(evalForms), holds));
   });
@@ -375,13 +510,16 @@ describe('lint gates (INVARIANTS.md G1–G4)', () => {
   });
 
   it('one forbidden line cannot be masked by others in the same file', async () => {
-    const any = fc.oneof(g1, g2, g3, g4, g6, g6Resolver, evalForms, benign);
+    const any = fc.oneof(g1, g2, g3, g4, g6, g6Resolver, g7Network, g7Loading, g7Html, g7Benign, evalForms, benign);
     const files = fc.array(any, { minLength: 1, maxLength: 5 }).chain((snippets) => {
-      const applicable = ALL.filter((c) => snippets.every((s) => (s.applicable ?? ALL).includes(c)));
+      const jsx = snippets.some((s) => s.jsx === true);
+      const applicable = ALL.filter(
+        (c) => snippets.every((s) => (s.applicable ?? ALL).includes(c)) && (!jsx || JSX_CATEGORIES.includes(c)),
+      );
       if (applicable.length === 0) return fc.constant(null);
       return fc
         .constantFrom(...applicable)
-        .chain(pathIn)
+        .chain((c) => pathIn(c, jsx))
         .map((path) => ({ snippets, path }));
     });
     await fc.assert(

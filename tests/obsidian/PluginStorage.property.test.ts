@@ -188,7 +188,7 @@ const commands = fc.commands(
     fc.tuple(nsArb, keyArb).map(([n, k]) => new Remove(n, k)),
     nsArb.map((n) => new List(n)),
   ],
-  { maxCommands: 40 },
+  { maxCommands: 60, size: 'large' },
 );
 
 describe('PluginStorage (INVARIANTS.md P3)', () => {

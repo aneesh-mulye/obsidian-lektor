@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { type App, Notice, type Plugin, PluginSettingTab, Setting } from 'obsidian';
-import type { AttachmentMode, DisplayMode, SettingsPatch, SettingsStore } from '../core/settings';
+import { type AttachmentMode, type DisplayMode, type SettingsPatch, type SettingsStore, normaliseBaseUrl } from '../core/settings';
 
 export interface SettingsHost extends Plugin {
   settingsStore: SettingsStore;
   saveSettings(): Promise<void>;
+  /** Contact the configured Ollama server and describe what it has. */
+  checkOllama(): Promise<string>;
 }
 
 const DISPLAY_LABELS: Record<DisplayMode, string> = {
@@ -42,6 +44,23 @@ export class LektorSettingTab extends PluginSettingTab {
       const list = box.createEl('ul');
       for (const p of other) list.createEl('li', { text: `${p.path || 'Settings file'}: ${p.message}` });
     }
+
+    // Models
+    new Setting(containerEl).setName('Models').setHeading();
+
+    let urlDraft = s.models.ollama.baseUrl;
+    new Setting(containerEl)
+      .setName('Ollama server')
+      .setDesc('Where your Ollama server listens. Chats with Ollama models are sent only to this address.')
+      .addText((text) =>
+        text
+          .setPlaceholder('http://127.0.0.1:11434')
+          .setValue(urlDraft)
+          .onChange((value) => {
+            urlDraft = value;
+          }),
+      )
+      .addButton((button) => button.setButtonText('Save and check').onClick(() => void this.saveOllamaUrl(urlDraft)));
 
     // Context
     new Setting(containerEl).setName('Context').setHeading();
@@ -153,6 +172,21 @@ export class LektorSettingTab extends PluginSettingTab {
       return;
     }
     await this.save();
+  }
+
+  private async saveOllamaUrl(text: string): Promise<void> {
+    const url = normaliseBaseUrl(text);
+    if (url === null) {
+      new Notice('Lektor: enter an http:// or https:// address, such as http://127.0.0.1:11434.');
+      return;
+    }
+    await this.apply({ models: { ollama: { baseUrl: url } } });
+    this.display();
+    try {
+      new Notice(`Lektor: ${await this.host.checkOllama()}`);
+    } catch (err) {
+      new Notice(`Lektor: could not reach Ollama at ${url}. ${err instanceof Error ? err.message : ''}`);
+    }
   }
 
   private async saveExclusions(text: string): Promise<void> {

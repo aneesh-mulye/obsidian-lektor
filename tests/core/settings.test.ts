@@ -2,14 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_SETTINGS, MAX_EXCLUDED_PATTERNS, SettingsStore } from '../../src/core/settings';
+import { DEFAULT_SETTINGS, MAX_EXCLUDED_PATTERNS, SettingsStore, normaliseBaseUrl } from '../../src/core/settings';
 
 const disk = (v: unknown): unknown => JSON.parse(JSON.stringify(v)) as unknown;
 
 describe('SettingsStore', () => {
   it('has conservative defaults', () => {
     expect(DEFAULT_SETTINGS).toEqual({
-      version: 1,
+      version: 2,
+      models: { ollama: { baseUrl: 'http://127.0.0.1:11434' }, defaultModel: null },
       review: { defaultDisplayMode: 'sidebar' },
       context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3 },
       tools: { searchesPerMessage: 5, fetchesPerMessage: 5 },
@@ -104,11 +105,21 @@ describe('SettingsStore', () => {
     expect(store.problems.map((p) => p.path)).toContain('version');
   });
 
+  it('normalises an Ollama URL typed by the user', () => {
+    expect(normaliseBaseUrl(' http://localhost:11434/ ')).toBe('http://localhost:11434');
+    expect(normaliseBaseUrl('HTTP://LocalHost:11434')).toBe('http://localhost:11434');
+    expect(normaliseBaseUrl('http://127.0.0.1:80')).toBe('http://127.0.0.1');
+    expect(normaliseBaseUrl('ftp://x')).toBeNull();
+    expect(normaliseBaseUrl('http://u:p@x')).toBeNull();
+    expect(normaliseBaseUrl('http://x/?q')).toBeNull();
+    expect(normaliseBaseUrl('localhost:11434')).toBeNull();
+  });
+
   it('reports settings from a newer version but keeps what it can read', () => {
-    const raw = { ...(disk(DEFAULT_SETTINGS) as object), version: 2 };
+    const raw = { ...(disk(DEFAULT_SETTINGS) as object), version: 3 };
     const store = SettingsStore.load(raw);
     expect(store.problems).toEqual([expect.objectContaining({ path: 'version' })]);
     expect(store.exclusionsIntact).toBe(true);
-    expect(store.settings.version).toBe(1);
+    expect(store.settings.version).toBe(2);
   });
 });

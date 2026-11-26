@@ -11,7 +11,12 @@
  * (chats, edit history) under the plugin folder, and only through paths built
  * by resolveStoragePath / resolveStorageDir in src/core/storage.ts.
  *
- * See INVARIANTS.md (G1–G5). Never weaken or disable these; if a feature
+ * They also keep Lektor's privacy promise structural: only Http.ts may open a
+ * network connection, nothing may create an element that loads a URL, and raw
+ * HTML is confined to SafeMarkdown.tsx (which renders model output with images
+ * and HTML switched off).
+ *
+ * See INVARIANTS.md (G1–G7). Never weaken or disable these; if a feature
  * seems to need it, stop and ask.
  *
  * ESLint flat config lets the *last* block that sets a rule win, so every
@@ -23,6 +28,8 @@
 export const CONTEXT_BROKER = 'src/obsidian/ContextBroker.ts';
 export const REVIEW_CONTROLLER = 'src/obsidian/ReviewController.ts';
 export const PLUGIN_STORAGE = 'src/obsidian/PluginStorage.ts';
+export const HTTP = 'src/obsidian/Http.ts';
+export const SAFE_MARKDOWN = 'src/obsidian/ui/SafeMarkdown.tsx';
 
 const EXT = '{ts,tsx,mts,cts,js,mjs,cjs,jsx}';
 const SRC = `src/**/*.${EXT}`;
@@ -32,6 +39,7 @@ const CLI = `src/core/cli/**/*.${EXT}`;
 /** Rule names the gates own. No other config block may set these for src/. */
 export const GATE_RULES = [
   'no-restricted-imports',
+  'no-restricted-globals',
   'no-restricted-syntax',
   'no-eval',
   'no-new-func',
@@ -80,6 +88,9 @@ const M_READ = `Only ${CONTEXT_BROKER} may reach vault or note content (hard rul
 const M_WRITE = `Only ${REVIEW_CONTROLLER} may change notes, and only from an accept click (hard rule 1).`;
 const M_CORE = 'src/core must never import obsidian or the editor; define an interface in core and implement it in src/obsidian.';
 const M_FS = 'Raw filesystem, process and Electron access is only allowed in src/core/cli/ (the CLI bridges); notes must be read through ContextBroker.';
+const M_NET = `Only ${HTTP} may make network requests (DESIGN.md § Privacy guarantees); take an HttpClient instead.`;
+const M_LOAD = 'Nothing in Lektor may create an element or attribute that loads a URL (img, iframe, src, …), so displayed model output can never contact anyone.';
+const M_HTML = `Raw HTML is only allowed in ${SAFE_MARKDOWN}, which renders through the locked-down Markdown renderer.`;
 const M_DYN = 'Dynamic module loading (require, import(), import = require) is not allowed in src/; use a static import so the gates can see it.';
 
 // ---------------------------------------------------------------------------
@@ -182,6 +193,48 @@ const S_STORAGE = [
   { selector: "Literal[value=/^editor-/]", message: M_READ },
 ];
 
+/** Network APIs: banned everywhere except Http.ts. */
+const NET_NAMES = [
+  'fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'WebTransport',
+  'RTCPeerConnection', 'Worker', 'SharedWorker', 'Image', 'Audio',
+];
+const S_NETWORK = [
+  ...access([...NET_NAMES, 'sendBeacon'], M_NET),
+  ...onReceiver(['window', 'globalThis', 'self'], ['open'], M_NET),
+  { selector: 'VariableDeclarator[init.name=/^(window|globalThis|self)$/] > ObjectPattern', message: M_NET },
+];
+const G_NETWORK = [...NET_NAMES, 'open', 'importScripts'].map((name) => ({ name, message: M_NET }));
+
+/** Anything that loads a resource by URL: banned everywhere. */
+const LOADING_TAGS = [
+  'img', 'iframe', 'frame', 'video', 'audio', 'source', 'track', 'picture', 'script',
+  'link', 'style', 'object', 'embed', 'image', 'use', 'base', 'meta', 'form', 'portal',
+];
+const TAG = `/^(${LOADING_TAGS.join('|')})$/i`;
+const S_LOADING = [
+  { selector: `CallExpression[callee.property.name=/^(createEl|createElement)$/][arguments.0.value=${TAG}]`, message: M_LOAD },
+  { selector: `CallExpression[callee.name=/^(createEl|createElement)$/][arguments.0.value=${TAG}]`, message: M_LOAD },
+  { selector: `CallExpression[callee.property.name='createElementNS'][arguments.1.value=${TAG}]`, message: M_LOAD },
+  { selector: `JSXOpeningElement[name.name=${TAG}]`, message: M_LOAD },
+  ...access(['src', 'srcset', 'srcdoc', 'backgroundImage'], M_LOAD),
+  { selector: 'Property[key.name=/^(src|srcset|srcdoc|backgroundImage)$/i]', message: M_LOAD },
+  { selector: 'JSXAttribute[name.name=/^(src|srcset|srcdoc|poster)$/i]', message: M_LOAD },
+  {
+    selector: 'CallExpression[callee.property.name=/^(setAttribute|setAttr)$/][arguments.0.value=/^(src|srcset|srcdoc|style|background|poster)$/i]',
+    message: M_LOAD,
+  },
+];
+
+/** Raw HTML: banned everywhere; dangerouslySetInnerHTML only in SafeMarkdown.tsx. */
+const S_RAW_HTML = [
+  ...access(['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'setHTMLUnsafe', 'createContextualFragment'], M_HTML),
+  ...onReceiver(['document'], ['write', 'writeln'], M_HTML),
+];
+const S_DANGEROUS_HTML = [
+  { selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']", message: M_HTML },
+  { selector: "Property[key.name='dangerouslySetInnerHTML']", message: M_HTML },
+];
+
 // ---------------------------------------------------------------------------
 // Import groups
 
@@ -195,26 +248,16 @@ const I_FS = [
   'child_process', 'node:child_process', 'electron',
 ].map((name) => ({ name, message: M_FS }));
 
-const I_CORE = {
-  paths: [{ name: 'obsidian', message: M_CORE }],
-  patterns: [{ group: ['@codemirror/*'], message: M_CORE }],
-};
+/** Loopback server modules: only the CLI bridges (their local MCP server). */
+const I_NET_LOOPBACK = ['http', 'node:http', 'net', 'node:net'].map((name) => ({ name, message: M_NET }));
+/** Outbound network modules: nowhere; Http.ts uses fetch. */
+const I_NET_OTHER = [
+  'https', 'node:https', 'tls', 'node:tls', 'dgram', 'node:dgram',
+  'http2', 'node:http2', 'dns', 'node:dns', 'undici',
+].map((name) => ({ name, message: M_NET }));
 
-function imports({ obsidianNames = [], codemirror = false, fs = true, core = false }) {
-  const paths = [];
-  const patterns = [];
-  if (core) {
-    paths.push(...I_CORE.paths);
-    patterns.push(...I_CORE.patterns);
-  } else {
-    if (obsidianNames.length > 0) {
-      paths.push({ name: 'obsidian', importNames: obsidianNames, message: M_READ });
-    }
-    if (codemirror) patterns.push({ group: ['@codemirror/*'], message: M_READ });
-  }
-  if (fs) paths.push(...I_FS);
-  return ['error', { paths, patterns }];
-}
+// ---------------------------------------------------------------------------
+// Composition
 
 const EVAL = {
   'no-eval': 'error',
@@ -232,14 +275,44 @@ const EVAL_GLOBALS = {
   self: 'readonly',
 };
 
-function block(name, files, ignores, importRule, syntax) {
+/**
+ * One gate block. `content` is the category's vault-access syntax group; the
+ * flags name what this category is additionally *allowed*.
+ */
+function gate(name, files, ignores, { content, obsidianNames, core = false, codemirror = false, fs = false, loopback = false, network = false, html = false, editorWrite = false }) {
+  const paths = [];
+  const patterns = [];
+  if (core) {
+    paths.push({ name: 'obsidian', message: M_CORE });
+    patterns.push({ group: ['@codemirror/*'], message: M_CORE });
+  } else {
+    paths.push({ name: 'obsidian', importNames: ['MarkdownRenderer', 'sanitizeHTMLToDom'], message: M_HTML });
+    if (!network) paths.push({ name: 'obsidian', importNames: ['requestUrl', 'request'], message: M_NET });
+    if (obsidianNames.length > 0) paths.push({ name: 'obsidian', importNames: obsidianNames, message: M_READ });
+    if (!codemirror) patterns.push({ group: ['@codemirror/*'], message: M_READ });
+  }
+  if (!fs) paths.push(...I_FS);
+  if (!loopback) paths.push(...I_NET_LOOPBACK);
+  paths.push(...I_NET_OTHER);
+
+  const syntax = [
+    ...S_MODULES,
+    ...S_LOADING,
+    ...S_RAW_HTML,
+    ...(html ? [] : S_DANGEROUS_HTML),
+    ...(network ? [] : S_NETWORK),
+    ...(editorWrite ? [] : S_EDITOR_WRITE_ANYWHERE),
+    ...content,
+  ];
+
   return {
     name: `lektor/gates/${name}`,
     files,
     ...(ignores.length > 0 ? { ignores } : {}),
     languageOptions: { globals: EVAL_GLOBALS },
     rules: {
-      'no-restricted-imports': importRule,
+      'no-restricted-imports': ['error', { paths, patterns }],
+      'no-restricted-globals': network ? 'off' : ['error', ...G_NETWORK],
       'no-restricted-syntax': ['error', ...syntax],
       ...EVAL,
     },
@@ -249,49 +322,22 @@ function block(name, files, ignores, importRule, syntax) {
 // ---------------------------------------------------------------------------
 // Blocks: each src file matches exactly one.
 
+const OWNED = [CONTEXT_BROKER, REVIEW_CONTROLLER, PLUGIN_STORAGE, HTTP, SAFE_MARKDOWN];
+
 export const gateBlocks = [
-  block(
-    'obsidian',
-    [SRC],
-    [CORE, CONTEXT_BROKER, REVIEW_CONTROLLER, PLUGIN_STORAGE],
-    imports({ obsidianNames: I_CONTENT_NAMES, codemirror: true }),
-    [...S_MODULES, ...S_EDITOR_WRITE_ANYWHERE, ...S_CONTENT],
-  ),
-  block(
-    'core',
-    [CORE],
-    [CLI],
-    imports({ core: true }),
-    [...S_MODULES, ...S_EDITOR_WRITE_ANYWHERE, ...S_CONTENT],
-  ),
-  block(
-    'cli',
-    [CLI],
-    [],
-    imports({ core: true, fs: false }),
-    [...S_MODULES, ...S_EDITOR_WRITE_ANYWHERE, ...S_CONTENT],
-  ),
-  block(
-    'context-broker',
-    [CONTEXT_BROKER],
-    [],
-    imports({ obsidianNames: ['FileManager'], codemirror: true }),
-    [...S_MODULES, ...S_EDITOR_WRITE_ANYWHERE, ...S_BROKER],
-  ),
-  block(
-    'review-controller',
-    [REVIEW_CONTROLLER],
-    [],
-    imports({ obsidianNames: ['DataAdapter', 'FileSystemAdapter', 'MetadataCache'] }),
-    [...S_MODULES, ...S_REVIEW],
-  ),
-  block(
-    'plugin-storage',
-    [PLUGIN_STORAGE],
-    [],
-    imports({ obsidianNames: I_CONTENT_NAMES, codemirror: true }),
-    [...S_MODULES, ...S_EDITOR_WRITE_ANYWHERE, ...S_STORAGE],
-  ),
+  gate('obsidian', [SRC], [CORE, ...OWNED], { content: S_CONTENT, obsidianNames: I_CONTENT_NAMES }),
+  gate('core', [CORE], [CLI], { content: S_CONTENT, core: true }),
+  gate('cli', [CLI], [], { content: S_CONTENT, core: true, fs: true, loopback: true }),
+  gate('context-broker', [CONTEXT_BROKER], [], { content: S_BROKER, obsidianNames: ['FileManager'] }),
+  gate('review-controller', [REVIEW_CONTROLLER], [], {
+    content: S_REVIEW,
+    obsidianNames: ['DataAdapter', 'FileSystemAdapter', 'MetadataCache'],
+    codemirror: true,
+    editorWrite: true,
+  }),
+  gate('plugin-storage', [PLUGIN_STORAGE], [], { content: S_STORAGE, obsidianNames: I_CONTENT_NAMES }),
+  gate('http', [HTTP], [], { content: S_CONTENT, obsidianNames: I_CONTENT_NAMES, network: true }),
+  gate('safe-markdown', [SAFE_MARKDOWN], [], { content: S_CONTENT, obsidianNames: I_CONTENT_NAMES, html: true }),
 ];
 
 /** Which gate block applies to a repo-relative path (null: not gated). Mirrors the globs above. */
@@ -300,6 +346,8 @@ export function gateCategory(path) {
   if (path === CONTEXT_BROKER) return 'context-broker';
   if (path === REVIEW_CONTROLLER) return 'review-controller';
   if (path === PLUGIN_STORAGE) return 'plugin-storage';
+  if (path === HTTP) return 'http';
+  if (path === SAFE_MARKDOWN) return 'safe-markdown';
   if (path.startsWith('src/core/cli/')) return 'cli';
   if (path.startsWith('src/core/')) return 'core';
   return 'obsidian';

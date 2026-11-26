@@ -19,9 +19,12 @@ import {
   deletePath,
   getPath,
   nearValid,
+  baseUrl,
+  modelRef,
   pattern,
   setPath,
   validSettings,
+  validV1Settings,
 } from './settings.arbitraries';
 
 /** What Obsidian's saveData/loadData does to our data: a JSON round-trip. */
@@ -89,7 +92,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
 
   it('S3: unknown keys are dropped and reported, without touching known fields', () => {
     fc.assert(
-      fc.property(validSettings, fc.constantFrom('', 'review.', 'context.', 'tools.', 'privacy.'), (s, where) => {
+      fc.property(validSettings, fc.constantFrom('', 'review.', 'context.', 'tools.', 'privacy.', 'models.', 'models.ollama.'), (s, where) => {
         const raw = clone(s) as unknown;
         setPath(raw, `${where}autoApply`, true);
         const store = SettingsStore.load(disk(raw));
@@ -126,6 +129,18 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         expect(store.exclusionsIntact).toBe(false);
         expect(store.settings.context.excludedFolders).toEqual(EXCLUDE_EVERYTHING);
         expect(store.problems.some((p) => p.path.startsWith('context') || p.path === '')).toBe(true);
+      }),
+    );
+  });
+
+  it('S6: version-1 settings migrate to version 2 losslessly', () => {
+    fc.assert(
+      fc.property(validV1Settings, (v1) => {
+        const store = SettingsStore.load(disk(v1));
+        const { version: _v, ...rest } = v1;
+        expect(store.settings).toEqual({ ...rest, version: 2, models: DEFAULT_SETTINGS.models });
+        expect(store.problems).toEqual([]);
+        expect(store.exclusionsIntact).toBe(true);
       }),
     );
   });
@@ -227,6 +242,10 @@ const validField: Record<string, Record<string, fc.Arbitrary<unknown>>> = {
     fetchesPerMessage: fc.integer({ min: 0, max: 50 }),
   },
   privacy: { storeFullTranscripts: fc.boolean() },
+  models: {
+    ollama: baseUrl.map((u) => ({ baseUrl: u })),
+    defaultModel: fc.option(modelRef, { nil: null }),
+  },
 };
 
 const validPatch: fc.Arbitrary<Patch> = fc
@@ -269,7 +288,7 @@ const commands = fc.commands(
     lines.map((l) => new SetExcludedCommand(l)),
     fc.constant(new SaveReloadCommand()),
   ],
-  { maxCommands: 30 },
+  { maxCommands: 40, size: 'large' },
 );
 
 const initial: fc.Arbitrary<{ raw: unknown; model: Model }> = fc.oneof(

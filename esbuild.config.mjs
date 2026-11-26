@@ -27,7 +27,8 @@ function appendThirdPartyLicences(metafile) {
   for (const pkg of [...packages].sort()) {
     const dir = join('node_modules', pkg);
     const { version, license } = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-    const file = readdirSync(dir).find((f) => /^licen[cs]e(\.(md|txt))?$/i.test(f));
+    // LICENSE, LICENCE.md, LICENSE-MIT.txt, …
+    const file = readdirSync(dir).find((f) => /^licen[cs]e([-.][\w.-]+)?$/i.test(f));
     if (!file || !existsSync(join(dir, file))) throw new Error(`No licence file found for bundled package ${pkg}`);
     const text = readFileSync(join(dir, file), 'utf8').replaceAll('*/', '* /');
     notices += `\n--- ${pkg}@${version} (${license}) ---\n\n${text.trim()}\n`;

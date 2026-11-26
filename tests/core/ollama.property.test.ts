@@ -1,0 +1,289 @@
+// SPDX-FileCopyrightText: 2026 Aneesh Mulye
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+/** INVARIANTS.md O1–O2: Ollama streams always end exactly once; requests carry only the conversation. */
+
+import fc from 'fast-check';
+import { describe, expect, it } from 'vitest';
+import type { HttpClient, HttpRequest, HttpResponse } from '../../src/core/http';
+import { OllamaProvider } from '../../src/core/providers/ollama';
+import type { ChatEvent, ChatMessage } from '../../src/core/providers/types';
+
+const enc = new TextEncoder();
+
+// ---------------------------------------------------------------------------
+// Scripted fake server
+
+type ServerLine =
+  | { kind: 'delta'; content?: string | undefined; thinking?: string | undefined }
+  | { kind: 'empty-object' }
+  | { kind: 'error'; message: string }
+  | { kind: 'bad-json'; text: string }
+  | { kind: 'bad-shape' }
+  | { kind: 'done'; reason?: string | undefined; prompt?: number | undefined; output?: number | undefined };
+
+interface Script {
+  status: number;
+  errorBody: string;
+  lines: ServerLine[];
+  /** What happens if the lines run out without a done line. */
+  ending: 'close' | 'throw';
+  offsets: number[];
+  requestThrows: boolean;
+  thinking: boolean;
+  showFails: boolean;
+}
+
+function serialise(l: ServerLine): string {
+  switch (l.kind) {
+    case 'delta':
+      return JSON.stringify({ model: 'm', message: { role: 'assistant', content: l.content ?? '', ...(l.thinking !== undefined ? { thinking: l.thinking } : {}) }, done: false });
+    case 'empty-object':
+      return '{}';
+    case 'error':
+      return JSON.stringify({ error: l.message });
+    case 'bad-json':
+      return l.text;
+    case 'bad-shape':
+      return JSON.stringify({ message: { role: 'assistant', content: 42 }, done: false });
+    case 'done':
+      return JSON.stringify({
+        model: 'm', message: { role: 'assistant', content: '' }, done: true,
+        ...(l.reason !== undefined ? { done_reason: l.reason } : {}),
+        ...(l.prompt !== undefined ? { prompt_eval_count: l.prompt } : {}),
+        ...(l.output !== undefined ? { eval_count: l.output } : {}),
+      });
+  }
+}
+
+function abortError(): Error {
+  const e = new Error('The operation was aborted.');
+  e.name = 'AbortError';
+  return e;
+}
+
+class FakeHttp implements HttpClient {
+  readonly requests: HttpRequest[] = [];
+  /** `slow`: yield to the event loop between chunks, like a real socket. */
+  constructor(
+    readonly script: Script,
+    readonly slow = false,
+  ) {}
+
+  request(req: HttpRequest): Promise<HttpResponse> {
+    this.requests.push(req);
+    const { script } = this;
+    if (req.signal?.aborted) return Promise.reject(abortError());
+    if (req.url.endsWith('/api/show')) {
+      if (script.showFails) return Promise.reject(new Error('ECONNREFUSED'));
+      const show = { capabilities: script.thinking ? ['completion', 'thinking'] : ['completion'], model_info: { 'qwen.context_length': 8192 } };
+      return Promise.resolve({ status: 200, body: once(enc.encode(JSON.stringify(show))) });
+    }
+    if (script.requestThrows) return Promise.reject(new Error('ECONNREFUSED'));
+    if (script.status !== 200) return Promise.resolve({ status: script.status, body: once(enc.encode(script.errorBody)) });
+
+    const bytes = enc.encode(script.lines.map(serialise).join('\n') + (script.lines.length ? '\n' : ''));
+    const points = [...new Set(script.offsets.map((o) => o % (bytes.length + 1)))].sort((a, b) => a - b);
+    const signal = req.signal;
+    const slow = this.slow;
+    async function* body(): AsyncGenerator<Uint8Array> {
+      let last = 0;
+      for (const p of [...points, bytes.length]) {
+        await (slow ? new Promise((r) => setImmediate(r)) : Promise.resolve());
+        if (signal?.aborted) throw abortError();
+        yield bytes.slice(last, p);
+        last = p;
+      }
+      if (script.ending === 'throw') throw new Error('socket hang up');
+    }
+    return Promise.resolve({ status: 200, body: body() });
+  }
+}
+
+async function* once(b: Uint8Array): AsyncGenerator<Uint8Array> {
+  await Promise.resolve();
+  yield b;
+}
+
+// ---------------------------------------------------------------------------
+// Reference model
+
+type Shape = { type: 'text' | 'reasoning'; text: string } | { type: 'usage'; inputTokens?: number; outputTokens?: number } | { type: 'error' } | { type: 'done'; reason: string };
+
+function expectedEvents(s: Script): Shape[] {
+  if (s.showFails || s.requestThrows || s.status !== 200) return [{ type: 'error' }, { type: 'done', reason: 'error' }];
+  const out: Shape[] = [];
+  for (const l of s.lines) {
+    switch (l.kind) {
+      case 'delta':
+        if (l.thinking) out.push({ type: 'reasoning', text: l.thinking });
+        if (l.content) out.push({ type: 'text', text: l.content });
+        break;
+      case 'empty-object':
+        break;
+      case 'error':
+      case 'bad-json':
+      case 'bad-shape':
+        return [...out, { type: 'error' }, { type: 'done', reason: 'error' }];
+      case 'done':
+        if (l.prompt !== undefined || l.output !== undefined) {
+          out.push({ type: 'usage', ...(l.prompt !== undefined ? { inputTokens: l.prompt } : {}), ...(l.output !== undefined ? { outputTokens: l.output } : {}) });
+        }
+        return [...out, { type: 'done', reason: l.reason === 'length' ? 'length' : 'stop' }];
+    }
+  }
+  return [...out, { type: 'error' }, { type: 'done', reason: 'error' }];
+}
+
+function shape(e: ChatEvent): Shape {
+  if (e.type === 'error') {
+    expect(e.message.length).toBeGreaterThan(0);
+    return { type: 'error' };
+  }
+  return e;
+}
+
+// ---------------------------------------------------------------------------
+// Generators
+
+const text = fc.oneof(fc.string({ maxLength: 12 }), fc.constantFrom('日本', '𝄞', '\n', ''));
+const serverLine: fc.Arbitrary<ServerLine> = fc.oneof(
+  { weight: 10, arbitrary: fc.record({ kind: fc.constant('delta' as const), content: fc.option(text, { nil: undefined }), thinking: fc.option(text, { nil: undefined }) }, { requiredKeys: ['kind'] }) },
+  { weight: 1, arbitrary: fc.constant({ kind: 'empty-object' as const }) },
+  { weight: 1, arbitrary: fc.record({ kind: fc.constant('error' as const), message: fc.string({ minLength: 1 }) }) },
+  { weight: 1, arbitrary: fc.record({ kind: fc.constant('bad-json' as const), text: fc.constantFrom('{', 'nope', '{"a":') }) },
+  { weight: 1, arbitrary: fc.constant({ kind: 'bad-shape' as const }) },
+  { weight: 2, arbitrary: fc.record({ kind: fc.constant('done' as const), reason: fc.option(fc.constantFrom('stop', 'length', 'load', 'unload'), { nil: undefined }), prompt: fc.option(fc.nat(), { nil: undefined }), output: fc.option(fc.nat(), { nil: undefined }) }, { requiredKeys: ['kind'] }) },
+);
+
+const script: fc.Arbitrary<Script> = fc.record({
+  status: fc.oneof({ weight: 8, arbitrary: fc.constant(200) }, { weight: 1, arbitrary: fc.constantFrom(400, 404, 500, 503) }),
+  errorBody: fc.constantFrom('{"error":"model \'x\' not found"}', 'Internal Server Error', '', '{"error":42}'),
+  lines: fc.array(serverLine, { maxLength: 15 }),
+  ending: fc.constantFrom('close' as const, 'throw' as const),
+  offsets: fc.array(fc.nat(), { maxLength: 20 }),
+  requestThrows: fc.oneof({ weight: 8, arbitrary: fc.constant(false) }, { weight: 1, arbitrary: fc.constant(true) }),
+  thinking: fc.boolean(),
+  showFails: fc.oneof({ weight: 12, arbitrary: fc.constant(false) }, { weight: 1, arbitrary: fc.constant(true) }),
+});
+
+const message: fc.Arbitrary<ChatMessage> = fc.record({ role: fc.constantFrom('user' as const, 'assistant' as const, 'system' as const), content: fc.string() });
+const baseUrl = fc.webUrl({ withQueryParameters: false, withFragments: false }).map((u) => u.replace(/\/+$/, ''));
+
+async function run(provider: OllamaProvider, messages: ChatMessage[], abortAfter: number | null) {
+  const controller = new AbortController();
+  const events: ChatEvent[] = [];
+  let abortedAt: number | null = null;
+  for await (const e of provider.stream({ model: 'm', messages }, controller.signal)) {
+    events.push(e);
+    if (abortAfter !== null && events.length === abortAfter && abortedAt === null) {
+      controller.abort();
+      abortedAt = events.length;
+    }
+  }
+  return { events, abortedAt };
+}
+
+// ---------------------------------------------------------------------------
+
+describe('OllamaProvider.stream (INVARIANTS.md O1)', () => {
+  it('O1: exactly one done, last; events match the server; never throws', async () => {
+    await fc.assert(
+      fc.asyncProperty(script, async (s) => {
+        const provider = new OllamaProvider(new FakeHttp(s), () => 'http://127.0.0.1:11434');
+        const { events } = await run(provider, [{ role: 'user', content: 'hi' }], null);
+        expect(events.map(shape)).toEqual(expectedEvents(s));
+      }),
+    );
+  });
+
+  it('O1: after an abort, the only further event is done: aborted', async () => {
+    await fc.assert(
+      fc.asyncProperty(script, fc.nat({ max: 20 }), async (s, k) => {
+        const provider = new OllamaProvider(new FakeHttp(s), () => 'http://127.0.0.1:11434');
+        const { events, abortedAt } = await run(provider, [{ role: 'user', content: 'hi' }], k);
+        const dones = events.filter((e) => e.type === 'done');
+        expect(dones).toHaveLength(1);
+        expect(events.at(-1)?.type).toBe('done');
+        if (abortedAt !== null && abortedAt < events.length) {
+          // The stream had not finished when we aborted.
+          expect(events.slice(abortedAt)).toEqual([{ type: 'done', reason: 'aborted' }]);
+          expect(events.slice(0, abortedAt).map(shape)).toEqual(expectedEvents(s).slice(0, abortedAt));
+        }
+      }),
+    );
+  });
+
+  it('O1: an abort that lands while a read is pending (the Stop button) ends with only done: aborted', async () => {
+    await fc.assert(
+      fc.asyncProperty(script, fc.nat({ max: 20 }), async (s, k) => {
+        const provider = new OllamaProvider(new FakeHttp(s, true), () => 'http://127.0.0.1:11434');
+        const controller = new AbortController();
+        const events: ChatEvent[] = [];
+        let abortedAt: number | null = null;
+        for await (const e of provider.stream({ model: 'm', messages: [{ role: 'user', content: 'hi' }] }, controller.signal)) {
+          events.push(e);
+          if (events.length === k) {
+            // Fires after the consumer has asked for the next event, while the stream is awaiting I/O.
+            setImmediate(() => {
+              abortedAt = events.length;
+              controller.abort();
+            });
+          }
+        }
+        expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
+        expect(events.at(-1)?.type).toBe('done');
+        if (abortedAt !== null && abortedAt < events.length) {
+          expect(events.slice(abortedAt)).toEqual([{ type: 'done', reason: 'aborted' }]);
+        }
+      }),
+    );
+  });
+
+  it('O1: aborting before the request starts yields only done: aborted', async () => {
+    const s: Script = { status: 200, errorBody: '', lines: [{ kind: 'delta', content: 'x' }], ending: 'close', offsets: [], requestThrows: false, thinking: false, showFails: false };
+    const controller = new AbortController();
+    controller.abort();
+    const events: ChatEvent[] = [];
+    for await (const e of new OllamaProvider(new FakeHttp(s), () => 'http://h').stream({ model: 'm', messages: [] }, controller.signal)) events.push(e);
+    expect(events).toEqual([{ type: 'done', reason: 'aborted' }]);
+  });
+});
+
+describe('OllamaProvider requests (INVARIANTS.md O2)', () => {
+  it('O2: requests go only to the configured server and carry exactly the conversation', async () => {
+    await fc.assert(
+      fc.asyncProperty(baseUrl, fc.string({ minLength: 1 }), fc.array(message, { maxLength: 6 }), fc.boolean(), async (base, model, messages, thinking) => {
+        const http = new FakeHttp({ status: 200, errorBody: '', lines: [{ kind: 'done' }], ending: 'close', offsets: [], requestThrows: false, thinking, showFails: false });
+        const provider = new OllamaProvider(http, () => base);
+        const input = structuredClone(messages);
+        for await (const _ of provider.stream({ model, messages }, new AbortController().signal)) { /* drain */ }
+
+        expect(messages).toEqual(input); // not mutated
+        for (const r of http.requests) {
+          expect([`${base}/api/show`, `${base}/api/chat`]).toContain(r.url);
+          expect(r.method).toBe('POST');
+        }
+        const chat = http.requests.find((r) => r.url === `${base}/api/chat`)!;
+        const body = JSON.parse(chat.body!) as Record<string, unknown>;
+        expect(body).toEqual({ model, messages: input.map(({ role, content }) => ({ role, content })), stream: true, ...(thinking ? { think: true } : {}) });
+        const show = http.requests.find((r) => r.url === `${base}/api/show`)!;
+        expect(JSON.parse(show.body!)).toEqual({ model });
+      }),
+    );
+  });
+});
+
+describe('OllamaProvider errors', () => {
+  it('names the server it could not reach', async () => {
+    const down: HttpClient = { request: () => Promise.reject(new TypeError('fetch failed')) };
+    const provider = new OllamaProvider(down, () => 'http://127.0.0.1:9');
+    await expect(provider.listModels()).rejects.toThrow('Could not reach Ollama at http://127.0.0.1:9. Is it running?');
+    const events: ChatEvent[] = [];
+    for await (const e of provider.stream({ model: 'm', messages: [] }, new AbortController().signal)) events.push(e);
+    expect(events).toEqual([
+      { type: 'error', message: 'Could not reach Ollama at http://127.0.0.1:9. Is it running?' },
+      { type: 'done', reason: 'error' },
+    ]);
+  });
+});

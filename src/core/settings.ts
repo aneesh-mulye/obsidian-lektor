@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 
-export const SETTINGS_VERSION = 1;
+export const SETTINGS_VERSION = 2;
 
 /** The effective exclusion list while the stored one is unreadable. */
 export const EXCLUDE_EVERYTHING: readonly string[] = Object.freeze(['**']);
@@ -47,7 +47,42 @@ const count = (max: number) =>
 
 const Cap = count(50);
 
+/**
+ * A user-entered server URL in canonical form: http(s), no credentials, query
+ * or fragment, lower-cased host, no default port and no trailing slash.
+ * Returns null if it cannot be one.
+ */
+export function normaliseBaseUrl(input: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(input.trim());
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  if (url.username || url.password || url.search || url.hash) return null;
+  return url.href.replace(/\/+$/, '');
+}
+
+const BaseUrl = z
+  .string()
+  .max(2048)
+  .refine((s) => normaliseBaseUrl(s) === s, 'Must be an http(s) URL without credentials, query or trailing slash.');
+
+// eslint-disable-next-line no-control-regex -- control characters are exactly what we reject
+const NO_CONTROL = /^[^\u0000-\u001f\u007f]+$/;
+
+export const ModelRefSchema = z.strictObject({
+  provider: z.string().max(64).regex(/^[a-z][a-z0-9-]*(:[a-z0-9-]+)?$/),
+  model: z.string().min(1).max(256).regex(NO_CONTROL),
+});
+
 const SECTIONS = {
+  models: z.strictObject({
+    ollama: z.strictObject({ baseUrl: BaseUrl }),
+    /** The model last picked in the sidebar; new chats start with it. */
+    defaultModel: ModelRefSchema.nullable(),
+  }),
   review: z.strictObject({
     defaultDisplayMode: z.enum(DISPLAY_MODES),
   }),
@@ -65,8 +100,7 @@ const SECTIONS = {
   }),
 };
 
-type SectionName = keyof typeof SECTIONS;
-const SECTION_NAMES = Object.keys(SECTIONS) as SectionName[];
+const SECTION_NAMES = Object.keys(SECTIONS);
 
 export const SettingsSchema = z.strictObject({
   version: z.literal(SETTINGS_VERSION),
@@ -86,6 +120,7 @@ export type ReadonlySettings = DeepReadonly<Settings>;
 
 export const DEFAULT_SETTINGS: Settings = deepFreeze({
   version: SETTINGS_VERSION,
+  models: { ollama: { baseUrl: 'http://127.0.0.1:11434' }, defaultModel: null },
   review: { defaultDisplayMode: 'sidebar' },
   context: { attachmentMode: 'ask', excludedFolders: [], maxLinkDepth: 3 },
   tools: { searchesPerMessage: 5, fetchesPerMessage: 5 },
@@ -95,9 +130,12 @@ export const DEFAULT_SETTINGS: Settings = deepFreeze({
 /**
  * Migrations from version n to n+1, keyed by n. Each takes the raw stored
  * object and returns the raw object for the next version; field-level salvage
- * runs after the last one. There are none yet: version 1 is the first.
+ * runs after the last one (INVARIANTS.md S6).
  */
-const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string, unknown>> = {};
+const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string, unknown>> = {
+  // 1 → 2: the models section (Ollama URL, last-picked model) was added.
+  1: (raw) => ({ ...raw, version: 2, ...(Object.hasOwn(raw, 'models') ? {} : { models: clone(DEFAULT_SETTINGS.models) }) }),
+};
 
 // ---------------------------------------------------------------------------
 // Store
@@ -112,6 +150,7 @@ export type SettingsResult = { ok: true } | { ok: false; problems: SettingsProbl
 
 /** A change to any setting except the exclusion list (use `setExcludedFolders`). */
 export interface SettingsPatch {
+  readonly models?: Partial<Settings['models']>;
   readonly review?: Partial<Settings['review']>;
   readonly context?: Partial<Omit<Settings['context'], 'excludedFolders'>>;
   readonly tools?: Partial<Settings['tools']>;
@@ -152,55 +191,15 @@ export class SettingsStore {
 
     data = migrate(data, problems);
 
+    const salvage: Salvage = { problems, intact: false, unreadable: undefined };
+    const { version: _version, ...shape } = SettingsSchema.shape;
     for (const key of Object.keys(data)) {
-      if (key !== 'version' && !(SECTION_NAMES as string[]).includes(key)) {
-        problems.push({ path: key, message: 'Unknown setting; dropped.' });
-      }
+      if (key !== 'version' && !Object.hasOwn(shape, key)) problems.push({ path: key, message: 'Unknown setting; dropped.' });
     }
-
-    const settings = clone(DEFAULT_SETTINGS) as Record<string, unknown> & Settings;
-    let intact = false;
-    let unreadable: unknown = undefined;
-
-    for (const section of SECTION_NAMES) {
-      const shape = SECTIONS[section].shape as Record<string, z.ZodType>;
-      const stored = own(data, section);
-      const out = settings[section] as Record<string, unknown>;
-
-      if (!isRecord(stored)) {
-        if (isRecord(raw)) {
-          problems.push({
-            path: section,
-            message: stored === undefined ? 'Section missing; defaults are in use.' : 'Section is not an object; defaults are in use.',
-          });
-        }
-        // No list to write back; on reload the missing list is unreadable again, so this stays closed.
-        if (section === 'context') unreadable = undefined;
-        continue;
-      }
-
-      for (const key of Object.keys(stored)) {
-        if (!(key in shape)) problems.push({ path: `${section}.${key}`, message: 'Unknown setting; dropped.' });
-      }
-
-      for (const [field, schema] of Object.entries(shape)) {
-        const value = own(stored, field);
-        const parsed = schema.safeParse(value);
-        const isExclusions = section === 'context' && field === 'excludedFolders';
-        if (parsed.success) {
-          out[field] = parsed.data;
-          if (isExclusions) intact = true;
-        } else {
-          problems.push({
-            path: `${section}.${field}`,
-            message: isExclusions
-              ? 'The excluded-folders list could not be read, so no notes will be shared until you set it again.'
-              : `${value === undefined ? 'Missing' : 'Invalid value'}; the default is in use.`,
-          });
-          if (isExclusions) unreadable = jsonSafe(value);
-        }
-      }
-    }
+    const sections = salvageObject(shape, data, DEFAULT_SETTINGS, '', salvage, isRecord(raw));
+    const settings = { version: SETTINGS_VERSION, ...sections } as Settings;
+    const { intact } = salvage;
+    let { unreadable } = salvage;
 
     if (!intact) {
       settings.context.excludedFolders = [...EXCLUDE_EVERYTHING];
@@ -228,7 +227,7 @@ export class SettingsStore {
 
     const next = clone(this.#settings) as unknown as Record<string, Record<string, unknown>>;
     for (const [section, fields] of Object.entries(patch)) {
-      if (!(SECTION_NAMES as string[]).includes(section) || !isRecord(fields)) {
+      if (!(SECTION_NAMES).includes(section) || !isRecord(fields)) {
         problems.push({ path: section, message: 'Unknown or invalid section.' });
         continue;
       }
@@ -286,6 +285,66 @@ export class SettingsStore {
 
 // ---------------------------------------------------------------------------
 // Helpers
+
+const EXCLUSIONS_PATH = 'context.excludedFolders';
+
+interface Salvage {
+  problems: SettingsProblem[];
+  /** Whether the stored exclusion list was read. */
+  intact: boolean;
+  /** JSON-safe copy of an unreadable stored exclusion list. */
+  unreadable: unknown;
+}
+
+/**
+ * Field-level salvage: keep every stored leaf that is valid, default the rest,
+ * and report each problem by its dotted path (INVARIANTS.md S1, S3). Nested
+ * objects are salvaged recursively; the exclusion list fails closed (S4).
+ */
+function salvageObject(
+  shape: Record<string, z.ZodType>,
+  stored: unknown,
+  defaults: unknown,
+  path: string,
+  st: Salvage,
+  report: boolean,
+): Record<string, unknown> {
+  const out = clone(defaults) as Record<string, unknown>;
+  if (!isRecord(stored)) {
+    if (report && path !== '') {
+      st.problems.push({ path, message: stored === undefined ? 'Missing; defaults are in use.' : 'Not an object; defaults are in use.' });
+    }
+    return out;
+  }
+  if (path !== '') {
+    for (const key of Object.keys(stored)) {
+      if (!Object.hasOwn(shape, key)) st.problems.push({ path: `${path}.${key}`, message: 'Unknown setting; dropped.' });
+    }
+  }
+  for (const [field, schema] of Object.entries(shape)) {
+    const fieldPath = path === '' ? field : `${path}.${field}`;
+    const value = own(stored, field);
+    if (schema instanceof z.ZodObject) {
+      out[field] = salvageObject(schema.shape, value, out[field], fieldPath, st, report);
+      continue;
+    }
+    const parsed = schema.safeParse(value);
+    const isExclusions = fieldPath === EXCLUSIONS_PATH;
+    if (parsed.success) {
+      out[field] = parsed.data;
+      if (isExclusions) st.intact = true;
+    } else {
+      st.problems.push({
+        path: fieldPath,
+        message: isExclusions
+          ? 'The excluded-folders list could not be read, so no notes will be shared until you set it again.'
+          : `${value === undefined ? 'Missing' : 'Invalid value'}; the default is in use.`,
+      });
+      if (isExclusions) st.unreadable = jsonSafe(value);
+    }
+  }
+  return out;
+}
 
 function migrate(data: Record<string, unknown>, problems: SettingsProblem[]): Record<string, unknown> {
   let version = own(data, 'version');
