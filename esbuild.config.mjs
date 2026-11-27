@@ -4,7 +4,7 @@
 import esbuild from 'esbuild';
 import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { builtinModules } from 'node:module';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import process from 'node:process';
 
 const prod = process.argv[2] === 'production';
@@ -17,6 +17,14 @@ third-party code whose licence notices are reproduced at the end of the file.
 */`;
 
 /** Append the LICENSE file of every npm package that ended up in the bundle. */
+/** Redirects markdown-it's `import * as mdurl from "mdurl"` (and only that one) to src/obsidian/ui/mdurl.ts. */
+const markdownItMdurl = {
+  name: 'lektor-markdown-it-mdurl',
+  setup(build) {
+    build.onResolve({ filter: /^mdurl$/ }, (args) => (/[\\/]node_modules[\\/]markdown-it[\\/]/.test(args.importer) ? { path: resolve('src/obsidian/ui/mdurl.ts') } : undefined));
+  },
+};
+
 function appendThirdPartyLicences(metafile) {
   const packages = new Set();
   for (const input of Object.keys(metafile.inputs)) {
@@ -42,6 +50,8 @@ const context = await esbuild.context({
   bundle: true,
   // markdown-it's punycode.js is replaced by a stand-in built on the URL parser (see the file).
   alias: { 'punycode.js': './src/obsidian/ui/punycode.ts' },
+  // markdown-it's own import of mdurl gets Lektor's copy of its parse (src/obsidian/ui/mdurl.ts).
+  plugins: [markdownItMdurl],
   external: [
     'obsidian',
     'electron',

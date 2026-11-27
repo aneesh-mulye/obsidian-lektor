@@ -2,6 +2,13 @@
 
 Each release's notes are the section for its version below; the release workflow publishes them as the GitHub release's description and refuses to release a version that has no section here.
 
+## 0.1.3
+
+Addresses the Community directory's review of 0.1.2.
+
+- Links in replies are tidied by Lektor's copy of the URL parser markdown-it uses (mdurl), which checks host names without splitting and joining them. The review's scanner took that splitting for hidden network endpoints. Links behave exactly as before.
+- The README section "What Lektor's code can reach" explains the file system and program access the review lists under Behavior.
+
 ## 0.1.2
 
 Addresses the Community directory's review of 0.1.1.

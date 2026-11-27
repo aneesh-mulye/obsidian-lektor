@@ -206,6 +206,16 @@ describe('The directory’s review rules (INVARIANTS.md U4)', () => {
     expect(read('THIRD_PARTY.md')).not.toMatch(/^\| punycode\.js /m);
   });
 
+  it('U4: markdown-it’s import of mdurl gets Lektor’s parse, which assembles no domains (0.1.2 review), and it is credited', () => {
+    expect(read('esbuild.config.mjs')).toContain('plugins: [markdownItMdurl]');
+    expect(read('vitest.config.mts')).toContain("name: 'lektor-markdown-it-mdurl'");
+    const copy = read('src/obsidian/ui/mdurl-parse.ts');
+    expect(copy).toContain('SPDX-License-Identifier: MIT');
+    expect(copy).toContain('Copyright (c) 2015 Vitaly Puzrin, Alex Kocharin.');
+    expect(copy.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')).not.toMatch(/\.split\(|\.join\(/);
+    expect(read('THIRD_PARTY.md')).toContain('`src/obsidian/ui/mdurl-parse.ts`');
+  });
+
   it('U4: the review’s own ESLint rules are part of npm run lint', () => {
     expect(read('eslint.config.mjs')).toContain('...obsidianmd.configs.recommended');
     expect((JSON.parse(read('package.json')) as { devDependencies: Record<string, string> }).devDependencies['eslint-plugin-obsidianmd']).toMatch(/^\d+\.\d+\.\d+$/);
