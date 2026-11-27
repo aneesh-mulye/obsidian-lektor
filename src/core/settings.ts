@@ -12,6 +12,7 @@
  */
 
 import { z } from 'zod';
+import { issuePath } from './issuePath';
 
 export const SETTINGS_VERSION = 9;
 
@@ -407,7 +408,7 @@ export class SettingsStore {
     if (!parsed.success) {
       return {
         ok: false,
-        problems: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+        problems: parsed.error.issues.map((i) => ({ path: issuePath(i.path), message: i.message })),
       };
     }
     this.#settings = deepFreeze(parsed.data);
@@ -428,7 +429,7 @@ export class SettingsStore {
     if (!parsed.success) {
       return {
         ok: false,
-        problems: parsed.error.issues.map((i) => ({ path: ['context', 'excludedFolders', ...i.path].join('.'), message: i.message })),
+        problems: parsed.error.issues.map((i) => ({ path: issuePath(['context', 'excludedFolders', ...i.path]), message: i.message })),
       };
     }
     const next = clone(this.#settings);

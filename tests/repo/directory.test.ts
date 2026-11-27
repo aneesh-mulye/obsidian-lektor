@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ROOT } from '../lint/harness';
 
+
 const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8');
 const sources = readdirSync(join(ROOT, 'src'), { recursive: true, encoding: 'utf8' })
   .filter((f) => /\.(ts|tsx)$/.test(f))
@@ -128,6 +129,8 @@ describe('The directory’s review rules (INVARIANTS.md U4)', () => {
       expect(code, s.path).not.toMatch(/['"`/]\.obsidian\b/);
       // From the 0.1.0 review: no globalThis, even as a type (use window or activeWindow).
       expect(code, s.path).not.toMatch(/\bglobalThis\b/);
+      // From the 0.1.1-0.1.3 reviews: nothing split or joined on dots (read as runtime domain assembly).
+      expect(code, s.path).not.toMatch(/\.(split|join)\(\s*(['"`])\.\2\s*\)/);
     }
     // From the 0.1.0 review's CSS lint: only a plain line in text-decoration, and none of its extras.
     const css = read('styles.css').replace(/\/\*[\s\S]*?\*\//g, '');

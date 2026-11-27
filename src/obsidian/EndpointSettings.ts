@@ -11,6 +11,7 @@
 import { type App, Modal, Notice, SecretComponent, Setting } from 'obsidian';
 import { type Endpoint, EndpointSchema, type EndpointKind, MAX_ENDPOINTS, type ReadonlyEndpoint, normaliseBaseUrl } from '../core/settings';
 import { confirm } from './ConfirmModal';
+import { issuePath } from '../core/issuePath';
 
 export interface EndpointSettingsHost {
   endpoints(): readonly ReadonlyEndpoint[];
@@ -190,7 +191,7 @@ class EndpointModal extends Modal {
     const parsed = EndpointSchema.safeParse({ ...this.#draft, baseUrl: url });
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
-      new Notice(`Lektor: ${issue ? `${issue.path.join('.') || 'endpoint'}: ${issue.message}` : 'that endpoint is not valid.'}`);
+      new Notice(`Lektor: ${issue ? `${issuePath(issue.path) || 'endpoint'}: ${issue.message}` : 'that endpoint is not valid.'}`);
       return null;
     }
     return parsed.data;

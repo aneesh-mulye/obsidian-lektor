@@ -2,6 +2,12 @@
 
 Each release's notes are the section for its version below; the release workflow publishes them as the GitHub release's description and refuses to release a version that has no section here.
 
+## 0.1.4
+
+Addresses the Community directory's review of 0.1.3.
+
+- Setting and tool-argument names in error messages are built key by key instead of by joining a list with dots, which the review's scanner read as a domain name assembled at runtime. Messages read the same.
+
 ## 0.1.3
 
 Addresses the Community directory's review of 0.1.2.

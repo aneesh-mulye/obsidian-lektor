@@ -5,6 +5,7 @@ import { z } from 'zod';
 import type { ToolCall, ToolDefinition } from '../providers/types';
 import type { ToolBudget } from './budget';
 import { type StepResult, type Tool, type ToolContext, ToolError } from './types';
+import { issuePath } from '../issuePath';
 
 const fail = (content: string, summary: string, extra: Partial<StepResult> = {}): StepResult => ({ ok: false, content, summary, ...extra });
 
@@ -52,7 +53,7 @@ export class ToolRegistry {
     }
     const parsed = tool.schema.safeParse(args);
     if (!parsed.success) {
-      const issues = parsed.error.issues.map((i) => `${i.path.join('.') || 'arguments'}: ${i.message}`).join('; ');
+      const issues = parsed.error.issues.map((i) => `${issuePath(i.path) || 'arguments'}: ${i.message}`).join('; ');
       return fail(`Invalid arguments for ${tool.name}: ${issues}`, `${tool.name}: invalid arguments`);
     }
 
