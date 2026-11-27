@@ -182,6 +182,12 @@ describe('The directory’s review rules (INVARIANTS.md U4)', () => {
     // A proper title and notes: "Lektor x.y.z", and the version's CHANGELOG.md section.
     expect(wf).toContain('--title "Lektor $GITHUB_REF_NAME"');
     expect(wf).toContain('--notes-file "$RUNNER_TEMP/notes.md"');
+    // Signed provenance for the files (0.1.1 review): attested after the build, before the release.
+    expect(wf).toMatch(/id-token: write\s+attestations: write/);
+    const attest = wf.indexOf('actions/attest-build-provenance@');
+    expect(attest).toBeGreaterThan(wf.indexOf('npm run build'));
+    expect(attest).toBeLessThan(wf.indexOf('gh release create'));
+    for (const f of ['main.js', 'manifest.json', 'styles.css']) expect(wf.slice(attest, wf.indexOf('gh release create'))).toContain(f);
   });
 
   it('U4: CHANGELOG.md has notes for the manifest’s version (the release workflow needs them)', () => {
@@ -192,6 +198,12 @@ describe('The directory’s review rules (INVARIANTS.md U4)', () => {
     const rest = log.slice(at + version.length + 5);
     const section = rest.slice(0, rest.search(/\n## |$/));
     expect(section.trim().length).toBeGreaterThan(40);
+  });
+
+  it('U4: markdown-it’s punycode.js is swapped for the URL-based stand-in in the build and the tests (0.1.1 review)', () => {
+    expect(read('esbuild.config.mjs')).toContain("alias: { 'punycode.js': './src/obsidian/ui/punycode.ts' }");
+    expect(read('vitest.config.mts')).toContain("'punycode.js': new URL('./src/obsidian/ui/punycode.ts'");
+    expect(read('THIRD_PARTY.md')).not.toMatch(/^\| punycode\.js /m);
   });
 
   it('U4: the review’s own ESLint rules are part of npm run lint', () => {

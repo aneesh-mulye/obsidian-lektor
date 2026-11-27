@@ -25,7 +25,6 @@ These are compiled into the released `main.js`. The production build (`npm run b
 | entities | 8.1.0 | BSD-2-Clause | markdown-it dependency |
 | linkify-it | 6.1.0 | MIT | markdown-it dependency |
 | mdurl | 2.1.0 | MIT | markdown-it dependency |
-| punycode.js | 2.3.1 | MIT | markdown-it dependency |
 | uc.micro | 3.0.0 | MIT | markdown-it dependency |
 | picomatch | 4.0.7 | MIT | Glob matching for excluded folders (`src/core/context/exclusions.ts`) |
 | @mozilla/readability | 0.6.0 | Apache-2.0 | Readable text from fetched pages (`src/obsidian/HtmlExtractor.ts`) |

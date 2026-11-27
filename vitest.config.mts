@@ -4,7 +4,10 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  // As in the build (esbuild.config.mjs): markdown-it gets Lektor's punycode stand-in, so tests check what ships.
+  resolve: { alias: { 'punycode.js': new URL('./src/obsidian/ui/punycode.ts', import.meta.url).pathname } },
   test: {
+    server: { deps: { inline: ['markdown-it'] } },
     include: ['tests/**/*.test.ts'],
     environment: 'node',
     setupFiles: ['tests/setup.ts'],

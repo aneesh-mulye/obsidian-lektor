@@ -40,6 +40,8 @@ const context = await esbuild.context({
   banner: { js: banner },
   entryPoints: ['src/main.ts'],
   bundle: true,
+  // markdown-it's punycode.js is replaced by a stand-in built on the URL parser (see the file).
+  alias: { 'punycode.js': './src/obsidian/ui/punycode.ts' },
   external: [
     'obsidian',
     'electron',

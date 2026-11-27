@@ -15,14 +15,17 @@ on:
 
 permissions:
   contents: write
+  # Artifact attestations: signed provenance for the release files (the 0.1.1 review's recommendation).
+  id-token: write
+  attestations: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: '24'
           cache: npm
@@ -53,6 +56,14 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+
+      - name: Attest that the plugin files were built here, from this commit
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
 
       - name: Create a draft release with the plugin files
         env:

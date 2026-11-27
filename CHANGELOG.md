@@ -2,6 +2,14 @@
 
 Each release's notes are the section for its version below; the release workflow publishes them as the GitHub release's description and refuses to release a version that has no section here.
 
+## 0.1.2
+
+Addresses the Community directory's review of 0.1.1.
+
+- Links to international domain names in replies are converted by the platform's own URL parser instead of the bundled punycode library, which the review's scanner mistook for hidden network endpoints. A link written in ASCII form (`xn--…`) now keeps that form in its text, so a look-alike domain shows for what it is.
+- Release files now come with GitHub artifact attestations, so anyone can check they were built from this repository.
+- The README says exactly what Lektor's code does with the file system, with programs it starts, and with the vault.
+
 ## 0.1.1
 
 Fixes the warnings from the Community directory's first review.

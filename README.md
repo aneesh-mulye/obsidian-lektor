@@ -46,6 +46,21 @@ Keys are kept in Obsidian's secret storage, not in Lektor's settings file.
 - **Sign-in.** Each program signs in by itself, from its own files: Claude Code from its stored login, Codex from your `~/.codex`. Lektor never reads, copies or sends your sign-in or any token. For Codex, Lektor tells it to ignore its settings, MCP servers and other configuration there and to keep its state and logs in the temporary folder; Codex may still refresh its own list of models in `~/.codex`.
 - **Chats and settings** are kept in Lektor's own folder inside your vault's configuration folder. Chat history records which notes were sent (paths and hashes), not their contents, unless you turn on full transcripts; replies themselves are kept and may quote your notes. When you delete a note, Lektor offers to delete the chats that sent it.
 
+### What Lektor's code can reach
+
+These limits are enforced by Lektor's own lint rules and tests.
+
+- **The file system (Node's `fs`).** Used only by the Claude Code and Codex bridges, in one module (`src/core/cli/fs.ts`). It does only these things:
+  - creates `lektor-…` folders in the system's temporary folder;
+  - writes the files described above;
+  - checks that the working folder is empty;
+  - removes those folders;
+  - checks that the `claude` or `codex` program exists.
+
+  It never reads a file's contents. Your notes are read only through Obsidian's vault API.
+- **Programs (Node's `child_process`).** Used only by the bridges, in one module (`src/core/cli/spawn.ts`), and only once you turn a bridge on. It starts the installed `claude` or `codex` program directly, never through a shell, with a fixed list of arguments (built in `src/core/cli/claude/args.ts` and `src/core/cli/codex/args.ts`). It also runs those programs' own version and information commands. Nothing else is ever run.
+- **The vault.** Lektor lists file names, not contents, for three things: resolving links, offering notes and folders when you add context, and keeping excluded folders out. A note's contents are read only when it is in your context (the chips above the message box), or when the model asks for it and you share it. Your notes change only when you accept a proposed change; Lektor's own chats and settings are kept in its plugin folder.
+
 ## What it does
 
 - **Chat about your notes.** Add the current note, a selection, a folder or an attachment as context. Linked notes can come along to a depth you choose. Excluded folders (and Obsidian's own excluded files) are never sent.
