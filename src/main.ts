@@ -117,6 +117,8 @@ export default class LektorPlugin extends Plugin {
       },
       now: () => Date.now(),
       randomToken: () => crypto.randomUUID().replace(/-/g, ''),
+      // One process started ahead of time, while the bridge and the setting are on (INVARIANTS.md L8).
+      warm: () => settings().cli.claudeCode.enabled && settings().cli.claudeCode.warm,
     });
     this.claudeCode = claudeCode;
     const providers = (): ChatProvider[] => {
@@ -424,6 +426,8 @@ export default class LektorPlugin extends Plugin {
 
   override onunload(): void {
     this.chats?.dispose();
+    // No Claude Code process or temp folder outlives Lektor.
+    void this.claudeCode?.dispose();
   }
 
   async saveSettings(): Promise<void> {

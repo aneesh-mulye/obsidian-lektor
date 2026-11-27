@@ -870,7 +870,7 @@ Shared generator, the **bridge world**: random bridge options (model aliases, in
 
 - **Properties:**
   - **Where:** every file the bridge writes or removes is inside a folder it created with `mkdtemp` under the system temp directory, with the `lektor-` prefix. Only the names `void/`, `mcp.json`, `system.txt` and `canary.txt` are written. Paths with `..`, absolute paths and other names are refused.
-  - **Afterwards:** the run folder is removed after every run, whether it finished, failed or was stopped.
+  - **Afterwards:** the run folder is removed after every run, whether it finished, failed or was stopped, and when a waiting spare is discarded (L8).
   - **The void:** `void/` is empty when Claude Code starts.
   - **One module each:** the bridge never reads a file's contents. `fs`, `os` and `path` are imported only by `src/core/cli/fs.ts`, `child_process` only by `src/core/cli/spawn.ts` (never with a shell), and `http` only by `src/core/cli/mcp.ts`.
 - **Counterexample means:** the bridge could read or change something outside its own temp folder, notes included.
@@ -926,7 +926,8 @@ Added after milestone 10, from a measurement on 2026-11-27. Five turns on haiku,
 - **Properties:**
   - **Prefix-stable:** the stdin message's content blocks for the longer conversation begin with exactly the blocks for the shorter one. Claude Code caches up to the end of each request, so the next request reads the whole earlier conversation from the cache.
   - **Complete:** every visible turn appears exactly once, in order, as its own block, with its exact text. The last block is the newest user message, and nothing else is added.
-  - **The system prompt** depends only on the system messages (Lektor's context and a preset's prompt), never on the transcript, so it stays cached across turns.
+  - **The system prompt is constant:** Lektor's fixed instructions only, never the context or the transcript. It stays cached, and a process started ahead of time is never stale (L8).
+  - **Lektor's own blocks have fixed places** (since the warm spare): the system messages that come before the conversation (the context, and the Prose-mode instruction) are the first blocks. A preset's prompt for this reply is the last block, after the newest user message.
 - **Counterexample means:** every message re-processes the whole history (more delay, and more of the user's plan used), or the model sees turns altered or out of order.
 - **After the change, measured the same way:**
   - The tokens read from the cache grew with the conversation: 14,335 → 14,452 → 14,554 → 14,590.
@@ -940,6 +941,40 @@ Added after milestone 10, from a measurement on 2026-11-27. Five turns on haiku,
   - images after their note;
   - a turn dropped.
   The one about images was caught only after the test pinned the exact block order.
+
+### L8. The warm spare never changes what a reply gets (stateful) — active
+
+Added after milestone 10 (DESIGN.md § Decided). One Claude Code process may be started ahead of time, after a finished reply, so the next message skips start-up (about 0.4 s).
+
+`tests/core/cli.spare.property.test.ts`, `fc.commands`, with a fake Claude Code and a manual clock
+
+- **Generator:** random sequences of messages, each with:
+  - **settings:** the model, Claude Code's web tools, and the set of Lektor tools offered;
+  - **an outcome:** finishes, fails, or is stopped.
+
+  Between messages: idle timeouts, an idle spare that dies, the setting turned off and on, and unload.
+- **Properties:**
+  - **Matching:** a message uses the spare only if it was started with exactly that message's settings: the same command, model, web tools and tool definitions. Otherwise the spare is discarded and a fresh process starts. A spare therefore can't run with flags or tools the message didn't ask for, and L1 holds for every reply.
+  - **Single use:** each spare serves at most one message, and its input receives exactly one message.
+  - **How many:** at most one spare is ever waiting.
+  - **When one starts:** only after a reply that finished, and only while the setting is on and Lektor is loaded.
+  - **Cleanup:** an unused spare is killed and its run folder removed: on a mismatch, after 10 idle minutes, if it dies, when the setting is turned off, and on unload.
+  - **No conversation in files:** a spare's files hold no conversation or note text. Its prompt file is the constant instructions, which is true of every run now; notes reach Claude Code only on stdin.
+  - **Tools before use:** a tool called on a waiting spare's MCP server runs nothing.
+- **Counterexample means:**
+  - a reply runs with settings or tools it didn't ask for;
+  - two messages share a process;
+  - or idle Claude Code processes and temp folders pile up.
+- **Mutation testing:** 14 broken versions, 13 caught.
+  - **Caught:** matching that ignores the model, web tools or Lektor tools; a spare kept after use; a spare after an error; the setting ignored; no idle timeout; a death ignored; a mismatched spare not closed; unload not stopping spares; tools running before a message; a spare used while the daily check is due; a folder left behind.
+  - **Caught only after changes to the test:**
+    - Ignoring the web tools, and starting a spare while the setting is off, slipped through at first. The test spent too many steps on unload and setting changes, so they were rarely exercised. It now weights its steps towards messages and counts the processes started.
+    - A spare kept after use is otherwise masked by its exit handler; a direct test with two messages sent at once catches it.
+  - **The survivor** removes the "has this spare died?" check when a message takes it. The exit handler always clears a dead spare before a message can see it, so that check is a safety net that can't be reached; it stays as one.
+- **Measured** with Claude Code 2.1.332 on haiku, about 14k tokens of context, and a 2 s pause between messages:
+  - **Overhead outside the API:** 513 ms on the first (fresh) process, then 56, 57 and 55 ms on the spares.
+  - **Caching:** reads grew 14,412 → 14,662 tokens, with 433–498 written fresh per turn. Caching held after the context moved into the message.
+- **When Obsidian quits without unloading:** a waiting Claude Code exits about a second after its input closes. Only its small temporary folder (the fixed instructions and a stale MCP config, no notes) is left in the system temp directory.
 
 ### Mutation testing and regressions (milestone 10)
 

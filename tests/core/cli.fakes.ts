@@ -13,6 +13,10 @@ export interface FakeRun {
   cwd: string;
   stdin: string;
   killed: boolean;
+  /** Died on its own (see crash). */
+  dead: boolean;
+  /** Make the process exit by itself, as a crash would. */
+  crash: () => void;
 }
 
 /** What the fake process does: print lines, maybe call Lektor's MCP server first, then exit. */
@@ -31,7 +35,7 @@ export class FakeSpawner implements Spawner {
   constructor(public script: (run: FakeRun) => Script) {}
 
   run(command: string, args: readonly string[], options: SpawnOptions): Spawned {
-    const run: FakeRun = { command, args: [...args], cwd: options.cwd, stdin: '', killed: false };
+    const run: FakeRun = { command, args: [...args], cwd: options.cwd, stdin: '', killed: false, dead: false, crash: () => undefined };
     this.runs.push(run);
     const version = this.version;
     const isVersion = args.length === 1 && args[0] === '--version';
@@ -48,7 +52,7 @@ export class FakeSpawner implements Spawner {
       const s = script ?? scriptFor(run);
       let n = 0;
       for (const l of s.lines) {
-        if (run.killed) break;
+        if (run.killed || run.dead) break;
         if (s.hangAfter !== undefined && n >= s.hangAfter) {
           await killed;
           break;
@@ -63,6 +67,13 @@ export class FakeSpawner implements Spawner {
       }
       exitResolve(run.killed ? { code: null, signal: 'SIGTERM' } : { code: s.code ?? 0, signal: null });
     })();
+    run.crash = () => {
+      if (run.killed || run.dead) return;
+      run.dead = true;
+      ended();
+      killResolve();
+      exitResolve({ code: 1, signal: null });
+    };
     return {
       lines,
       stderr: () => (script ? '' : (scriptFor(run).stderr ?? '')),
@@ -88,7 +99,7 @@ export const flag = (args: readonly string[], name: string): string | undefined 
 };
 
 /** Call a tool on the run's MCP server, as Claude Code would (reads the run's MCP config file). */
-export function mcpCall(run: FakeRun, method: string, params: unknown, id = 1, tamper?: { token?: string; host?: string; origin?: string }): Promise<{ status: number; body: string }> {
+export function mcpCall(run: Pick<FakeRun, 'args'>, method: string, params: unknown, id = 1, tamper?: { token?: string; host?: string; origin?: string }): Promise<{ status: number; body: string }> {
   const config = JSON.parse(readFileSync(flag(run.args, '--mcp-config')!, 'utf8')) as { mcpServers: { lektor: { url: string; headers: { Authorization: string } } } };
   const { url, headers } = config.mcpServers.lektor;
   const u = new URL(url);

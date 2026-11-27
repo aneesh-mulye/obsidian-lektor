@@ -8,13 +8,14 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ClaudeCodeProvider } from '../../src/core/cli/claude/provider';
+import { CLAUDE_CODE_INSTRUCTIONS, FROM_LEKTOR } from '../../src/core/cli/claude/prompt';
 import { ChatSession } from '../../src/core/chat/session';
 import type { Chat } from '../../src/core/chat/types';
 import type { PreparedContext } from '../../src/core/context/prepare';
 import { EMPTY_CONTEXT } from '../../src/core/context/state';
 import { proposeEditTool } from '../../src/core/review/tools';
 import { ToolRegistry } from '../../src/core/tools/registry';
-import { toolRuns } from '../../src/core/tools/run';
+import { PROSE, toolRuns } from '../../src/core/tools/run';
 import { FakeSpawner, type FakeRun, type Script, cc, flag, mcpCall } from './cli.fakes';
 
 const NOTE = 'The the lighthouse was finished in 1844.';
@@ -110,9 +111,10 @@ describe('Claude Code replies (INVARIANTS.md L6)', () => {
     expect(w.seen.tools).toEqual(['propose_edit']);
     const run = w.spawner.runs.find((r) => r.args[0] === '-p')!;
     expect(flag(run.args, '--tools')).toBe('WebSearch,WebFetch');
-    // The model sees the context and exactly the visible transcript.
-    expect(w.seen.system).toContain(`CONTEXT: Drafts/Essay.md\n${NOTE}`);
-    expect(run.stdin).toContain('Proofread my note.');
+    // The model sees the context and exactly the visible transcript; the prompt file holds only Lektor's fixed instructions.
+    expect(w.seen.system).toBe(CLAUDE_CODE_INSTRUCTIONS);
+    const blocks = (JSON.parse(run.stdin) as { message: { content: Array<{ text: string }> } }).message.content.map((b) => b.text);
+    expect(blocks).toEqual([`${FROM_LEKTOR}CONTEXT: Drafts/Essay.md\n${NOTE}`, 'User:\nProofread my note.']);
   });
 
   it('L6: in Lektor-fetch mode, fetch_page is offered over MCP (with its approval card) and WebFetch is not', async () => {
@@ -131,6 +133,16 @@ describe('Claude Code replies (INVARIANTS.md L6)', () => {
     const run = w.spawner.runs.find((r) => r.args[0] === '-p')!;
     expect(flag(run.args, '--tools')).toBe('WebSearch');
     expect(run.args).toContain('mcp__lektor__fetch_page');
+  });
+
+  it('L7: in Prose mode the standing instruction follows the context, before the conversation', async () => {
+    const w = world((_run, seen) => ({ lines: [cc.init([]), listTools(seen), cc.text('OK.'), cc.result()] }));
+    w.session.setDisplayMode('prose');
+    w.session.send('Hi.');
+    await settle(w);
+    const run = w.spawner.runs.find((r) => r.args[0] === '-p')!;
+    const blocks = (JSON.parse(run.stdin) as { message: { content: Array<{ text: string }> } }).message.content.map((b) => b.text);
+    expect(blocks).toEqual([`${FROM_LEKTOR}CONTEXT: Drafts/Essay.md\n${NOTE}`, `${FROM_LEKTOR}${PROSE}`, 'User:\nHi.']);
   });
 
   it('L6: with the globe off, Claude Code gets no web tools at all', async () => {

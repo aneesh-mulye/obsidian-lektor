@@ -53,7 +53,8 @@ describe('CLI bridge sources (INVARIANTS.md L3, L4)', () => {
 
   it('L1: Claude Code is started only with arguments from claudeArgs (or --version)', () => {
     const provider = source('src/core/cli/claude/provider.ts');
-    const runs = [...provider.matchAll(/spawner\.run\(command, ([^,]+),/g)].map((m) => m[1]!.trim());
+    const runs = [...provider.matchAll(/spawner\.run\((?:l\.)?command, ([^,]+),/g)].map((m) => m[1]!.trim());
+    expect([...provider.matchAll(/spawner\.run\(/g)]).toHaveLength(runs.length);
     expect(runs.sort()).toEqual(['["--version"]'.replace(/"/g, "'"), 'args', 'args'].sort());
     for (const f of files) if (f !== 'src/core/cli/claude/provider.ts' && f !== 'src/core/cli/spawn.ts') expect(source(f), f).not.toMatch(/spawner\.run\(|nodeSpawner\.run\(/);
   });

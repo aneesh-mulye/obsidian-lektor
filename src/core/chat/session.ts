@@ -212,7 +212,9 @@ export class ChatSession {
         const delivery: Delivery = tools?.definitions.some((d) => d.name === wanted) ? 'tool' : tools?.fenced ? 'fenced' : 'none';
         base.push({ role: 'system', content: presetInstructions(preset, delivery) });
       }
-      if (tools?.instructions) base.push({ role: 'system', content: tools.instructions });
+      // Standing instructions (Prose mode) right after the context: the same every reply, so they stay in the cached part of
+      // each request, before the conversation (INVARIANTS.md L7). A preset's prompt is this reply's alone and comes after it.
+      if (tools?.instructions) base.splice(prepared?.message ? 1 : 0, 0, { role: 'system', content: tools.instructions });
       if (tools?.fenced) base.push({ role: 'system', content: tools.fenced.instructions });
 
       for (let round = 0; ; round++) {

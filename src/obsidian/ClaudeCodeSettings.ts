@@ -38,7 +38,9 @@ export function renderClaudeCodeSettings(app: App, el: HTMLElement, host: Claude
   intro.addToggle((t) =>
     t.setValue(cc.enabled).onChange((on) => {
       if (!on) {
-        void set({ enabled: false }).then(redisplay);
+        void set({ enabled: false })
+          .then(() => host.provider?.discardSpare())
+          .then(redisplay);
         return;
       }
       void confirm(app, {
@@ -83,6 +85,15 @@ export function renderClaudeCodeSettings(app: App, el: HTMLElement, host: Claude
         .addOptions({ claude: 'Claude Code fetches pages itself', lektor: 'Lektor fetches pages (asks first for unknown ones)' })
         .setValue(cc.pages)
         .onChange((v) => void set({ pages: v === 'lektor' ? 'lektor' : 'claude' })),
+    );
+
+  new Setting(el)
+    .setName('Keep Claude Code ready')
+    .setDesc('After each reply, start the next Claude Code process ahead of time, so your next message gets an answer about half a second sooner. It uses about 200 MB of memory while it waits, and stops after 10 idle minutes.')
+    .addToggle((t) =>
+      t.setValue(cc.warm).onChange((on) => {
+        void set({ warm: on }).then(() => (on ? undefined : host.provider?.discardSpare()));
+      }),
     );
 
   const check = new Setting(el).setName('Lockdown check');

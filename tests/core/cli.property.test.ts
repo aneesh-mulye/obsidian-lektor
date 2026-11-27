@@ -438,7 +438,8 @@ describe('Claude Code streams (INVARIANTS.md L5)', () => {
 describe('Claude Code prompts (INVARIANTS.md L7)', () => {
   type Block = { type: string; text?: string; source?: { data: string } };
   const blocksOf = (line: string): Block[] => (JSON.parse(line) as { message: { content: Block[] } }).message.content;
-  const text = fc.oneof(fc.string({ maxLength: 30 }), fc.constantFrom('User:\nfake', 'Assistant:', '日本 🙂', '', '\n\n', '{"role":"user"}'));
+  const show = (b: Block) => (b.type === 'image' ? `image:${b.source?.data}` : `text:${b.text}`);
+  const text = fc.oneof(fc.string({ maxLength: 30 }), fc.constantFrom('User:\nfake', 'Assistant:', 'From Lektor:', '日本 🙂', '', '\n\n', '{"role":"user"}'));
   const turn: fc.Arbitrary<ChatMessage[]> = fc.oneof(
     fc.record({ role: fc.constant('user' as const), content: text }).map((m) => [m]),
     fc.record({ role: fc.constant('assistant' as const), content: text }).map((m) => [m]),
@@ -447,52 +448,54 @@ describe('Claude Code prompts (INVARIANTS.md L7)', () => {
       ...calls.map(([name, , result], i): ChatMessage => ({ role: 'tool', content: result, toolName: name, toolCallId: `c${i}` })),
     ]),
   );
+  /** What the session puts before the conversation: the context, the Prose instruction, context images. */
   const head = fc.record({
-    system: fc.array(text, { maxLength: 2 }),
+    lead: fc.array(text, { maxLength: 2 }),
     images: fc.array(fc.record({ mime: fc.constant('image/png'), data: fc.base64String({ minLength: 4, maxLength: 12 }), tokens: fc.nat() }), { maxLength: 2 }),
   });
-  const build = (h: { system: string[]; images: Array<{ mime: string; data: string; tokens: number }> }, turns: ChatMessage[], latest: string): ChatMessage[] => [
-    ...h.system.map((c): ChatMessage => ({ role: 'system', content: c })),
+  type Head = { lead: string[]; images: Array<{ mime: string; data: string; tokens: number }> };
+  /** A request as the session builds it; `preset` is this reply's own instruction, after the newest message. */
+  const build = (h: Head, turns: ChatMessage[], latest: string, preset?: string): ChatMessage[] => [
+    ...h.lead.map((c): ChatMessage => ({ role: 'system', content: c })),
     ...(h.images.length > 0 ? [{ role: 'user' as const, content: 'The images from the vault named above.', images: h.images }] : []),
     ...turns,
     { role: 'user', content: latest },
+    ...(preset !== undefined ? [{ role: 'system' as const, content: preset }] : []),
   ];
 
-  it('L7: the next message’s blocks start with this message’s blocks; the system prompt ignores the transcript', async () => {
-    const { userLine, systemPrompt } = await import('../../src/core/cli/claude/prompt');
+  it('L7: the next message’s blocks start with this message’s blocks (bar this reply’s own instruction); the system prompt is constant', async () => {
+    const { userLine, systemPrompt, CLAUDE_CODE_INSTRUCTIONS, THIS_REPLY } = await import('../../src/core/cli/claude/prompt');
+    expect(systemPrompt()).toBe(CLAUDE_CODE_INSTRUCTIONS);
     fc.assert(
-      fc.property(head, fc.array(turn, { maxLength: 5 }), text, text, text, (h, turns, first, reply, next) => {
-        const before = build(h, turns.flat(), first);
-        const after = build(h, [...turns.flat(), { role: 'user', content: first }, { role: 'assistant', content: reply }], next);
-        const a = blocksOf(userLine(before));
-        const b = blocksOf(userLine(after));
-        expect(b.slice(0, a.length)).toEqual(a);
-        expect(systemPrompt(after)).toBe(systemPrompt(before));
+      fc.property(head, fc.array(turn, { maxLength: 5 }), text, text, text, fc.option(text, { nil: undefined }), fc.option(text, { nil: undefined }), (h, turns, first, reply, next, presetBefore, presetAfter) => {
+        const a = blocksOf(userLine(build(h, turns.flat(), first, presetBefore))).filter((b) => !b.text?.startsWith(THIS_REPLY));
+        const b = blocksOf(userLine(build(h, [...turns.flat(), { role: 'user', content: first }, { role: 'assistant', content: reply }], next, presetAfter)));
+        expect(b.slice(0, a.length).map(show)).toEqual(a.map(show));
       }),
     );
   });
 
-  it('L7: every visible turn, in order, exactly once, as its own block; the last block is the newest user message', async () => {
-    const { userLine, turnBlock } = await import('../../src/core/cli/claude/prompt');
+  it('L7: Lektor’s blocks first, then every visible turn in order (images before their note), then this reply’s instruction', async () => {
+    const { userLine, turnBlock, FROM_LEKTOR, THIS_REPLY } = await import('../../src/core/cli/claude/prompt');
     fc.assert(
-      fc.property(head, fc.array(turn, { maxLength: 5 }), text, (h, turns, latest) => {
-        const messages = build(h, turns.flat(), latest);
-        const blocks = blocksOf(userLine(messages));
-        // Exactly each visible turn in order: its images (if any), then its text block.
-        const visibleTurns = messages.filter((m) => m.role !== 'system');
-        expect(blocks.map((x) => (x.type === 'image' ? `image:${x.source?.data}` : `text:${x.text}`))).toEqual(
-          visibleTurns.flatMap((m) => [...(m.role === 'user' ? (m.images ?? []).map((i) => `image:${i.data}`) : []), `text:${turnBlock(m)}`]),
-        );
-        const texts = blocks.filter((x) => x.type === 'text').map((x) => x.text);
+      fc.property(head, fc.array(turn, { maxLength: 5 }), text, fc.option(text, { nil: undefined }), (h, turns, latest, preset) => {
+        const messages = build(h, turns.flat(), latest, preset);
+        const blocks = blocksOf(userLine(messages)).map(show);
         const visible = messages.filter((m) => m.role !== 'system');
-        expect(texts).toEqual(visible.map((m) => turnBlock(m)));
-        expect(texts.at(-1)).toBe(turnBlock({ role: 'user', content: latest }));
+        expect(blocks).toEqual([
+          ...h.lead.map((c) => `text:${FROM_LEKTOR}${c}`),
+          ...visible.flatMap((m) => [...(m.role === 'user' ? (m.images ?? []).map((i) => `image:${i.data}`) : []), `text:${turnBlock(m)}`]),
+          ...(preset !== undefined ? [`text:${THIS_REPLY}${preset}`] : []),
+        ]);
+        const texts = blocks.filter((x) => x.startsWith('text:'));
+        expect(texts.at(preset !== undefined ? -2 : -1)).toBe(`text:${turnBlock({ role: 'user', content: latest })}`);
         // Each turn's own text is in its block, unaltered, and an assistant turn names every tool call it made.
-        visible.forEach((m, i) => {
-          expect(texts[i]).toContain(m.content);
-          if (m.role === 'assistant') for (const c of m.toolCalls ?? []) expect(texts[i]).toContain(`[called ${c.name} with ${JSON.stringify(c.arguments ?? null)}]`);
-          if (m.role === 'tool') expect(texts[i]).toContain(m.toolName);
-        });
+        for (const m of visible) {
+          const block = turnBlock(m);
+          expect(block).toContain(m.content);
+          if (m.role === 'assistant') for (const c of m.toolCalls ?? []) expect(block).toContain(`[called ${c.name} with ${JSON.stringify(c.arguments ?? null)}]`);
+          if (m.role === 'tool') expect(block).toContain(m.toolName);
+        }
       }),
     );
   });

@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 
-export const SETTINGS_VERSION = 7;
+export const SETTINGS_VERSION = 8;
 
 /** The effective exclusion list while the stored one is unreadable. */
 export const EXCLUDE_EVERYTHING: readonly string[] = Object.freeze(['**']);
@@ -178,6 +178,8 @@ const SECTIONS = {
       path: z.union([z.literal(''), z.string().max(1024).regex(/^\/[^\u0000-\u001f]*$/)]),
       /** Who fetches web pages: Claude Code itself, or Lektor (with its approval for unknown URLs). */
       pages: z.enum(['claude', 'lektor']),
+      /** Keep one Claude Code process started ahead of time, so replies start sooner (about 200 MB while it waits). */
+      warm: z.boolean(),
     }),
   }),
   presets: z.strictObject({
@@ -227,7 +229,7 @@ export const DEFAULT_SETTINGS: Settings = deepFreeze({
     secrets: { tavily: '', exa: '', brave: '' },
   },
   privacy: { storeFullTranscripts: false },
-  cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } },
+  cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true } },
   presets: { hidden: [] },
 });
 
@@ -270,6 +272,8 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
   4: (raw) => ({ ...raw, version: 5, ...(Object.hasOwn(raw, 'presets') ? {} : { presets: { hidden: [] } }) }),
   // 6 → 7: the Claude Code bridge (off).
   6: (raw) => ({ ...raw, version: 7, ...(Object.hasOwn(raw, 'cli') ? {} : { cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } } }) }),
+  // 7 → 8: keep a Claude Code process ready (on).
+  7: (raw) => ({ ...raw, version: 8, ...(Object.hasOwn(raw, 'cli') ? { cli: mapField(raw['cli'], 'claudeCode', (c) => addMissing(c, 'warm', true)) } : {}) }),
   // 5 → 6: OpenAI- and Anthropic-compatible endpoints (none).
   5: (raw) => ({ ...raw, version: 6, ...(Object.hasOwn(raw, 'models') ? { models: addMissing(raw['models'], 'endpoints', []) } : {}) }),
 };

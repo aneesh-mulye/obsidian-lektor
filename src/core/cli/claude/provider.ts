@@ -11,10 +11,10 @@
  */
 
 import { guardStream, ProviderError } from '../../providers/stream';
-import type { Capabilities, ChatEvent, ChatProvider, ChatRequest, ModelInfo, ToolHost } from '../../providers/types';
+import type { Capabilities, ChatEvent, ChatProvider, ChatRequest, ModelInfo, ToolDefinition, ToolHost } from '../../providers/types';
 import { type RunFolder, createRun, removeRun, voidIsEmpty, writeRunFile, writeVoidCanary } from '../fs';
-import { startMcpServer } from '../mcp';
-import type { Spawner } from '../spawn';
+import { type McpServer, startMcpServer } from '../mcp';
+import type { Spawned, Spawner } from '../spawn';
 import { CliError, LEKTOR_MCP_TOOLS, claudeArgs, mcpConfig } from './args';
 import { ClaudeStream } from './events';
 import { systemPrompt, userLine } from './prompt';
@@ -30,6 +30,43 @@ export const CLAUDE_MODELS: readonly ModelInfo[] = [
 export const CLAUDE_CONTEXT = 200_000;
 /** Long enough for an approval card to wait for the user. */
 const MCP_TOOL_TIMEOUT_MS = String(60 * 60 * 1000);
+/** How long a spare Claude Code process may wait for a message before it is discarded (INVARIANTS.md L8). */
+export const SPARE_IDLE_MS = 10 * 60 * 1000;
+
+/** Everything a Claude Code process is started with, apart from the message. */
+interface Launch {
+  command: string;
+  version: string;
+  model: string;
+  web: { search: boolean; pages: boolean };
+  /** Lektor's tools, served over MCP. */
+  definitions: ToolDefinition[];
+}
+
+/** A started process, its run folder and MCP server; the message's tool host is attached when it is used. */
+interface Started {
+  readonly key: string;
+  readonly run: RunFolder;
+  readonly server: McpServer;
+  readonly proc: Spawned;
+  attach(host: ToolHost): void;
+  closed: boolean;
+}
+
+interface Spare extends Started {
+  exited: boolean;
+  cancelIdle: () => void;
+}
+
+/** Two launches may share a process only if every setting it was started with is the same (INVARIANTS.md L8). */
+const keyOf = (l: Launch): string =>
+  JSON.stringify({ command: l.command, version: l.version, model: l.model, web: l.web, tools: l.definitions.map((d) => ({ name: d.name, description: d.description, parameters: d.parameters })) });
+
+const defaultSchedule = (ms: number, fn: () => void): (() => void) => {
+  const t: unknown = setTimeout(fn, ms);
+  (t as { unref?: () => void }).unref?.();
+  return () => clearTimeout(t as Parameters<typeof clearTimeout>[0]);
+};
 
 export interface ClaudeCodeDeps {
   /** The `claude` executable (the setting, or found on the system), or null. */
@@ -41,6 +78,10 @@ export interface ClaudeCodeDeps {
   now: () => number;
   /** A random token for canaries. */
   randomToken: () => string;
+  /** Keep one process started ahead of time, so the next message skips start-up (the setting; off if absent). */
+  warm?: () => boolean;
+  /** Run `fn` after `ms`; returns a cancel function (tests pass a manual clock). */
+  schedule?: (ms: number, fn: () => void) => () => void;
 }
 
 const VERSION = /^(\d+\.\d+\.\d+)\s+\(Claude Code\)\s*$/;
@@ -50,6 +91,14 @@ export class ClaudeCodeProvider implements ChatProvider {
   readonly label = 'Claude Code';
   #version: { command: string; version: string } | null = null;
   #testing: Promise<Verdict> | null = null;
+  /** At most one process waiting for the next message (INVARIANTS.md L8). */
+  #spare: Spare | null = null;
+  /** Starting or discarding the spare, one step at a time. */
+  #preparing: Promise<void> = Promise.resolve();
+  readonly #closing = new Set<Promise<void>>();
+  /** Replies whose clean-up (and the spare after them) hasn't finished yet. */
+  readonly #ending = new Set<Promise<void>>();
+  #disposed = false;
 
   constructor(private readonly deps: ClaudeCodeDeps) {}
 
@@ -144,9 +193,23 @@ export class ClaudeCodeProvider implements ChatProvider {
   }
 
   private async *rawStream(req: ChatRequest, signal: AbortSignal): AsyncGenerator<ChatEvent> {
+    let ended: () => void = () => undefined;
+    const ending = new Promise<void>((r) => (ended = r));
+    this.#ending.add(ending);
+    try {
+      yield* this.reply(req, signal);
+    } finally {
+      this.#ending.delete(ending);
+      ended();
+    }
+  }
+
+  private async *reply(req: ChatRequest, signal: AbortSignal): AsyncGenerator<ChatEvent> {
     const { command, version } = await this.installed();
     const stored = await this.deps.selfTest.read();
     if (!selfTestCurrent(stored, version, this.deps.now())) {
+      // A spare started under an earlier check is not used until the check passes again.
+      await this.discardSpare();
       yield { type: 'notice', message: `Lektor checked Claude Code ${version}’s lockdown before using it (once a day for each version).` };
       const verdict = await this.selfTest();
       if (!verdict.ok) throw new ProviderError(`Claude Code is disabled: the lockdown self-test failed (${verdict.reason}). Lektor won’t send it your notes.`);
@@ -154,22 +217,21 @@ export class ClaudeCodeProvider implements ChatProvider {
     if (signal.aborted) return;
 
     const host: ToolHost = req.toolHost ?? { definitions: [], call: () => Promise.resolve({ content: 'No tools.', isError: true }) };
-    const offered = host.definitions.map((d) => d.name).filter((n) => (LEKTOR_MCP_TOOLS as readonly string[]).includes(n));
     const web = req.web ?? { search: false, pages: false };
-    let run: RunFolder | null = null;
-    let server: Awaited<ReturnType<typeof startMcpServer>> | null = null;
+    const launch: Launch = {
+      command,
+      version,
+      model: req.model,
+      web: { search: web.search, pages: web.pages && this.deps.fetchMode() === 'claude' },
+      definitions: host.definitions.filter((d) => (LEKTOR_MCP_TOOLS as readonly string[]).includes(d.name)),
+    };
+    let started: Started | null = null;
+    let finished = false;
     try {
-      run = await createRun();
-      server = await startMcpServer({ definitions: host.definitions.filter((d) => offered.includes(d.name)), call: (n, a) => host.call(n, a) });
-      const args = claudeArgs({
-        model: req.model,
-        web: { search: web.search, pages: web.pages && this.deps.fetchMode() === 'claude' },
-        lektorTools: offered,
-        mcpConfigPath: await writeRunFile(run, 'mcp.json', mcpConfig(server.url, server.token)),
-        systemPromptPath: await writeRunFile(run, 'system.txt', systemPrompt(req.messages)),
-      });
-      if (!(await voidIsEmpty(run))) throw new ProviderError('Claude Code’s working folder was not empty.');
-      const p = this.deps.spawner.run(command, args, { cwd: run.void, env: { MCP_TOOL_TIMEOUT: MCP_TOOL_TIMEOUT_MS } });
+      // The waiting spare, if it was started with exactly these settings; otherwise a fresh process.
+      started = (await this.takeSpare(keyOf(launch))) ?? (await this.start(launch));
+      started.attach(host);
+      const p = started.proc;
       const onAbort = () => p.kill();
       signal.addEventListener('abort', onAbort, { once: true });
       try {
@@ -179,6 +241,7 @@ export class ClaudeCodeProvider implements ChatProvider {
         for await (const l of p.lines) {
           for (const e of stream.line(l)) {
             if (e.type === 'error') throw new ProviderError(e.message);
+            if (e.type === 'done') finished = e.reason !== 'error';
             yield e;
             if (e.type === 'done') return;
           }
@@ -193,8 +256,121 @@ export class ClaudeCodeProvider implements ChatProvider {
       if (err instanceof CliError) throw new ProviderError(err.message);
       throw err;
     } finally {
-      await server?.close();
-      if (run) await removeRun(run);
+      if (started) await this.close(started);
+      // After a finished reply, start the next message's process now (INVARIANTS.md L8).
+      if (finished && !signal.aborted) this.startSpare(launch);
     }
+  }
+
+  /** Start a process: a fresh run folder, an MCP server with these tools (handled once attached), the files, and Claude Code. */
+  private async start(l: Launch): Promise<Started> {
+    const run = await createRun();
+    let server: McpServer | null = null;
+    try {
+      let host: ToolHost | null = null;
+      server = await startMcpServer({
+        definitions: l.definitions,
+        // Until a message takes this process, no tool runs.
+        call: (name, args) => (host ? host.call(name, args) : Promise.resolve({ content: 'No message is being answered.', isError: true })),
+      });
+      const args = claudeArgs({
+        model: l.model,
+        web: l.web,
+        lektorTools: l.definitions.map((d) => d.name),
+        mcpConfigPath: await writeRunFile(run, 'mcp.json', mcpConfig(server.url, server.token)),
+        systemPromptPath: await writeRunFile(run, 'system.txt', systemPrompt()),
+      });
+      if (!(await voidIsEmpty(run))) throw new ProviderError('Claude Code’s working folder was not empty.');
+      const proc = this.deps.spawner.run(l.command, args, { cwd: run.void, env: { MCP_TOOL_TIMEOUT: MCP_TOOL_TIMEOUT_MS } });
+      return { key: keyOf(l), run, server, proc, closed: false, attach: (h) => (host = h) };
+    } catch (err) {
+      await server?.close();
+      await removeRun(run);
+      throw err;
+    }
+  }
+
+  /** Kill a process and remove its MCP server and run folder (once). */
+  private close(s: Started): Promise<void> {
+    if (s.closed) return Promise.resolve();
+    s.closed = true;
+    s.proc.kill();
+    const done = (async () => {
+      await s.server.close();
+      await removeRun(s.run);
+    })();
+    this.#closing.add(done);
+    void done.finally(() => this.#closing.delete(done)).catch(() => undefined);
+    return done;
+  }
+
+  /** The waiting spare if it matches `key` exactly; any other spare is discarded. */
+  private async takeSpare(key: string): Promise<Started | null> {
+    await this.#preparing;
+    const s = this.#spare;
+    this.#spare = null;
+    if (!s) return null;
+    s.cancelIdle();
+    if (s.key === key && !s.exited) return s;
+    await this.close(s);
+    return null;
+  }
+
+  /** Start a spare for the next message with these settings, replacing any other (INVARIANTS.md L8). */
+  private startSpare(l: Launch): void {
+    this.#preparing = this.#preparing
+      .then(async () => {
+        if (this.#disposed || !(this.deps.warm?.() ?? false)) return;
+        const old = this.#spare;
+        this.#spare = null;
+        if (old) {
+          old.cancelIdle();
+          await this.close(old);
+        }
+        const started = await this.start(l);
+        if (this.#disposed || !(this.deps.warm?.() ?? false)) {
+          await this.close(started);
+          return;
+        }
+        const spare: Spare = Object.assign(started, { exited: false, cancelIdle: () => undefined });
+        const drop = () => {
+          if (this.#spare !== spare) return;
+          this.#spare = null;
+          spare.cancelIdle();
+          void this.close(spare);
+        };
+        spare.cancelIdle = (this.deps.schedule ?? defaultSchedule)(SPARE_IDLE_MS, drop);
+        void spare.proc.exit.then(() => {
+          spare.exited = true;
+          drop();
+        });
+        this.#spare = spare;
+      })
+      .catch(() => undefined);
+  }
+
+  /** Resolves once replies that have ended are cleaned up and any spare being started or discarded is settled. */
+  async spareSettled(): Promise<void> {
+    await Promise.all([...this.#ending]);
+    await this.#preparing;
+    await Promise.all([...this.#closing]);
+  }
+
+  /** Discard the waiting spare, if any (the setting was turned off). */
+  async discardSpare(): Promise<void> {
+    await this.#preparing;
+    const s = this.#spare;
+    this.#spare = null;
+    if (s) {
+      s.cancelIdle();
+      await this.close(s);
+    }
+    await Promise.all([...this.#closing]);
+  }
+
+  /** Lektor is unloading: discard the spare and start no more. */
+  async dispose(): Promise<void> {
+    this.#disposed = true;
+    await this.discardSpare();
   }
 }
