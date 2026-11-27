@@ -83,6 +83,12 @@ Claude Code and Codex run locked down. Each runs in an empty temporary folder ou
 
 ![Lektor asking before it shares a note the model asked for](docs/images/context.png)
 
+## Install
+
+In Obsidian, open Settings → Community plugins → Browse, search for **Lektor**, then choose Install and Enable. Or open [Lektor's page in the Community directory](https://community.obsidian.md/plugins/lektor) and choose "Add to Obsidian".
+
+Lektor needs Obsidian 1.15.1 or later, on desktop.
+
 ## Getting started
 
 1. Open the sidebar with the ribbon icon or the command **Lektor: Open sidebar**.
