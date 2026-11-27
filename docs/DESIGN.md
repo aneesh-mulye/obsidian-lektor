@@ -322,9 +322,9 @@ One right-sidebar view, three stacked zones, nothing else on screen by default.
 
 **Discoverability rules**
 
-- Every icon has a tooltip with its name and hotkey.
+- Every icon has a tooltip with its name. (No default hotkeys; see Decided, before milestone 12.)
 - Icons only where the meaning is unambiguous (send, stop, ✕, globe, history). Preset buttons show icon + name until the sidebar is narrower than 320 px, then icon only.
-- Empty state shows three sample actions ("Proofread this note", "Find garden-path sentences", "Fact-check this note") instead of a blank pane.
+- Empty state shows a one-line hint pointing to the preset buttons just below it (decided before milestone 12).
 - All actions are also in the command palette under "Lektor: …".
 
 **Inline review in the editor.** Deletions struck through in a muted red, insertions underlined in green, a tiny ✓ / ✕ at the end of each hunk; a floating pill at the top right of the editor shows "3 pending · accept all · reject all" and the staleness dot. Findings use a dotted underline coloured by kind, with a hover card (explanation, sources, "Suggest fix").
@@ -491,6 +491,13 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
   - **The self-test has two parts.**
     - **The inventory** is free and local. It runs the same command, but with Codex's model provider pointed at a scripted model on Lektor's loopback server, so no request leaves the machine and no sign-in is sent (the provider sends the run's token). The scripted model lists every tool inside code mode. The check passes only if the tools are exactly the expected ones, both MCP resource lists are empty, Lektor's instructions are the only ones, and no canary reaches the model: not from the working folder, not from outside it, and not from an AGENTS.md. It runs for each model before its first chat each day.
     - **The real check** is one short request per Codex version per day, on the smallest model. That model is asked to read both canaries. The check passes only if Codex reports nothing but messages, reasoning, web searches and calls to Lektor's tools, and neither canary appears in the output.
+- *(2026-11-27, before milestone 12)* Polish, and readiness for the community directory, which the user intends to submit to.
+  - **No default hotkeys,** following the directory's guidelines. Every action is in the command palette, and the user binds the ones they like. That is why tooltips name actions but not keys: Obsidian has no public API for the user's own bindings.
+  - **A minimal empty chat:** one line ("Ask about the notes in context, or run a preset below."), because the preset buttons are always just below. The three sample buttons are gone.
+  - **The header's actions became commands:** choose the model and change the display mode (through a fuzzy picker), turn the web tools on or off, show the chat history, and stop the reply.
+  - **README screenshots** come from the separate test Obsidian on the fixtures vault, with real replies from a local model (Ollama, `qwen3.8:27b`).
+  - **The README** carries the disclosures the directory's developer policies require: network use, accounts, and privacy (no telemetry).
+  - **The install section** waits for the directory submission.
 - *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.

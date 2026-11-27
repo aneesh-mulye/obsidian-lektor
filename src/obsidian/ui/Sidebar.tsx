@@ -38,6 +38,8 @@ export interface SidebarProps {
   review?: ReviewUi;
   /** Presets and their findings. */
   presets?: PresetsUi;
+  /** Lets a command open the chat history (INVARIANTS.md U2); returns an unsubscribe function. */
+  onShowHistory?: (open: () => void) => () => void;
 }
 
 export interface PresetsUi {
@@ -78,9 +80,10 @@ function useCapabilities(providers: () => readonly ChatProvider[], model: ModelR
   return caps;
 }
 
-export function Sidebar({ manager, providers, clearAllChats, context, searchConfigured, review, presets }: SidebarProps) {
+export function Sidebar({ manager, providers, clearAllChats, context, searchConfigured, review, presets, onShowHistory }: SidebarProps) {
   const { chat, busy } = useSyncExternalStore(manager.subscribe, manager.snapshot);
   const [historyOpen, setHistoryOpen] = useState(false);
+  useEffect(() => onShowHistory?.(() => setHistoryOpen(true)), [onShowHistory]);
   const caps = useCapabilities(providers, chat.model, `${chat.id}:${chat.messages.length}:${chat.toolsDisabled === true}`);
   const window = caps?.contextWindow ?? null;
   const runnable = useRunnable(presets);
@@ -121,10 +124,6 @@ export function Sidebar({ manager, providers, clearAllChats, context, searchConf
           session={manager.session}
           {...(review ? { review } : {})}
           {...(presets ? { findings: presets.findings } : {})}
-          samples={start ? SAMPLES.flatMap((x) => {
-            const p = runnable.find((r) => r.id === x.id);
-            return p ? [{ label: x.label, icon: p.icon, run: () => void start(p) }] : [];
-          }) : []}
           onRegenerate={() => manager.session.regenerate()}
           onApprove={(id, ok, items) => manager.session.answerApproval(id, ok, items)}
         />
@@ -160,7 +159,7 @@ function errorText(err: unknown): string {
   return err instanceof Error && err.message ? err.message : 'not reachable';
 }
 
-const MODES: Record<DisplayMode, { title: string; icon: string }> = {
+export const MODES: Record<DisplayMode, { title: string; icon: string }> = {
   prose: { title: 'Prose: the model describes changes in words', icon: 'pilcrow' },
   sidebar: { title: 'Sidebar diff: review changes here', icon: 'git-compare' },
   inline: { title: 'Inline: review changes in the note', icon: 'highlighter' },
@@ -279,20 +278,12 @@ function Header(props: {
 // ---------------------------------------------------------------------------
 // Conversation
 
-/** The empty chat's sample actions: the built-ins, if they can run. */
-const SAMPLES = [
-  { id: 'proofread', label: 'Proofread this note' },
-  { id: 'garden-paths', label: 'Find garden-path sentences' },
-  { id: 'fact-check', label: 'Fact-check this note' },
-];
-
 function Conversation(props: {
   chat: Chat;
   busy: boolean;
   session: ChatSession;
   review?: ReviewUi;
   findings?: FindingsUi;
-  samples: ReadonlyArray<{ label: string; icon: string; run: () => void }>;
   onRegenerate: () => void;
   onApprove: (id: string, ok: boolean, items?: readonly string[]) => void;
 }) {
@@ -316,18 +307,9 @@ function Conversation(props: {
 
   if (chat.messages.length === 0) {
     return (
+      // A minimal empty chat (DESIGN.md § Decided, before milestone 12): one hint; the presets are just below.
       <div className="lektor-conversation lektor-empty">
-        <p>{chat.model ? 'Ask anything, or:' : 'Choose a model above to start.'}</p>
-        {chat.model && props.samples.length > 0 && (
-          <div className="lektor-samples">
-            {props.samples.map((x) => (
-              <button key={x.label} type="button" className="lektor-sample" onClick={x.run}>
-                <Icon name={x.icon} />
-                <span>{x.label}</span>
-              </button>
-            ))}
-          </div>
-        )}
+        <p>{chat.model ? 'Ask about the notes in context, or run a preset below.' : 'Choose a model above to start.'}</p>
       </div>
     );
   }

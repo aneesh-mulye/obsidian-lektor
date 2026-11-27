@@ -31,6 +31,8 @@ import { EditLog } from './core/review/log';
 import { ReviewManager } from './core/review/manager';
 import { fencedEdits, proposeEditTool, proposeNoteTool } from './core/review/tools';
 import { EditHistoryModal } from './obsidian/EditHistoryModal';
+import { ChoiceModal } from './obsidian/ChoiceModal';
+import { MODES } from './obsidian/ui/Sidebar';
 import { fencedFindings, placeFinding, reportFindingsTool } from './core/findings/findings';
 import { PresetLibrary } from './core/presets/library';
 import { presetStarter } from './obsidian/presets';
@@ -358,6 +360,8 @@ export default class LektorPlugin extends Plugin {
       if (ok) await this.chats.clearAll();
     };
 
+    // Commands can open the chat history in whichever sidebar is showing (INVARIANTS.md U2).
+    const historyOpeners = new Set<() => void>();
     this.registerView(
       VIEW_TYPE_LEKTOR,
       (leaf) =>
@@ -365,6 +369,10 @@ export default class LektorPlugin extends Plugin {
           manager: this.chats,
           providers,
           clearAllChats,
+          onShowHistory: (open) => {
+            historyOpeners.add(open);
+            return () => historyOpeners.delete(open);
+          },
           context: contextUi,
           searchConfigured: () => settings().tools.searchProvider !== 'none',
           review: {
@@ -396,6 +404,58 @@ export default class LektorPlugin extends Plugin {
       },
     });
     this.addCommand({ id: 'clear-all-chats', name: 'Clear all chats', callback: () => void clearAllChats() });
+    // The header's actions, for the keyboard and the command palette (INVARIANTS.md U2; no default hotkeys, U1).
+    this.addCommand({
+      id: 'choose-model',
+      name: 'Choose model…',
+      callback: async () => {
+        const choices: Array<{ provider: string; model: string; label: string }> = [];
+        const problems: string[] = [];
+        for (const p of providers()) {
+          try {
+            for (const m of await p.listModels()) choices.push({ provider: p.id, model: m.id, label: `${p.label} · ${m.name}` });
+          } catch (err) {
+            problems.push(`${p.label}: ${err instanceof Error ? err.message : 'not reachable'}`);
+          }
+        }
+        if (choices.length === 0) {
+          notice(problems.length > 0 ? `No models available. ${problems.join(' ')}` : 'No models available. Set one up in Lektor’s settings.');
+          return;
+        }
+        new ChoiceModal(this.app, choices, (c) => c.label, (c) => void this.chats.pickModel({ provider: c.provider, model: c.model }).then(() => this.activateView()), 'Choose a model for this chat').open();
+      },
+    });
+    this.addCommand({
+      id: 'change-display-mode',
+      name: 'Change display mode…',
+      callback: () => new ChoiceModal(this.app, ['prose', 'sidebar', 'inline'] as const, (m) => MODES[m].title, (m) => this.chats.session.setDisplayMode(m), 'How should proposed changes be shown?').open(),
+    });
+    this.addCommand({
+      id: 'toggle-web-tools',
+      name: 'Turn web tools on or off',
+      callback: () => {
+        const on = this.chats.session.chat.toolsDisabled === true;
+        this.chats.session.setTools(on);
+        notice(on ? 'Web tools on, from your next message.' : 'Web tools off, from your next message.');
+      },
+    });
+    this.addCommand({
+      id: 'show-chat-history',
+      name: 'Show chat history',
+      callback: () =>
+        void this.activateView().then(() => {
+          for (const open of historyOpeners) open();
+        }),
+    });
+    this.addCommand({
+      id: 'stop-reply',
+      name: 'Stop the reply',
+      checkCallback: (checking) => {
+        if (!this.chats.session.busy) return false;
+        if (!checking) this.chats.session.stop();
+        return true;
+      },
+    });
     this.addCommand({
       id: 'add-selection',
       name: 'Add selection to context',

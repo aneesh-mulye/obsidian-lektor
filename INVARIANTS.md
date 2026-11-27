@@ -1149,6 +1149,65 @@ Codex 0.162.1 was checked on 2026-11-27 (DESIGN.md § Decided, before milestone 
   - **The user's Obsidian profile** was unchanged.
 - **Caching across replies is best effort:** Codex sets `prompt_cache_key` to a new session id in every process, and there is no setting for it. In three measured turns, the second read 12,672 tokens from cache, from its own first request, made before the web search; the third read none. The prompt's start is kept identical (shared working folder, images named by content) so a cache hit is possible whenever OpenAI routes there.
 
+## Milestone 12: Polish
+
+The aim here is a plugin that's easy to find your way around and ready for the community directory's review. These are source checks, not property tests: nothing in this milestone is driven by sequences of actions.
+
+### U1. No default hotkeys — active
+
+`tests/repo/directory.test.ts`
+
+- **Check:** no `addCommand` in `src/` sets `hotkeys`. The user binds them in Settings → Hotkeys.
+- **Counterexample means:** Lektor could take over a key the user relies on, against the directory's guidelines.
+
+### U2. Every action is in the command palette — active
+
+`tests/repo/directory.test.ts`
+
+- **Check:** there is a command for each header action:
+  - choose the model;
+  - change the display mode;
+  - turn the web tools on or off;
+  - a new chat;
+  - show the chat history;
+  - stop the reply.
+
+  The commands that already existed stay: open the sidebar, the four ways to add context, the AI edit history, clear all chats, and one per preset.
+- **Counterexample means:** something can be done only with the mouse.
+
+### U3. Every icon has a tooltip — active
+
+`tests/repo/directory.test.ts`
+
+- **Checks:**
+  - Every `<IconButton>` has a non-empty `label`, and every element with the `clickable-icon` class has an `aria-label`. Obsidian shows that label as the tooltip.
+  - The ribbon icon has a title.
+- **Counterexample means:** an icon whose meaning a user has to guess.
+
+### U4. The directory's review rules hold — active
+
+`tests/repo/directory.test.ts`
+
+- **The code never:**
+  - sets HTML from strings (`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `document.write`);
+  - uses `workspace.activeLeaf`;
+  - detaches leaves on unload;
+  - logs with `console.log`, `info` or `debug`;
+  - writes the config folder's name (`.obsidian`) instead of `vault.configDir`.
+- **The manifest:**
+  - its id has no "obsidian" in it;
+  - `isDesktopOnly` is true, because the CLI bridges use Node;
+  - the description is at most 250 characters, ends with a full stop, and doesn't mention Obsidian or say it is a plugin;
+  - `versions.json` maps its version to its `minAppVersion`.
+- **Names:** no command or settings heading starts with the plugin's name, and no heading says "settings" or "options".
+- **The README** says what goes over the network, which accounts the CLI bridges need, and that there is no telemetry, as the directory's developer policies require.
+- **Counterexample means:** a review comment, or a policy breach, waiting to happen.
+
+### Mutation testing (milestone 12)
+
+- **Five broken versions, all caught:** a default hotkey; a command dropped; an icon without a tooltip; a `console.log`; the README's telemetry line removed.
+- **Two first-run failures were the checks' own mistakes:** a doc comment that names `.obsidian`, which is now skipped as a comment, and the preset command's id, which is set through a variable.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.
