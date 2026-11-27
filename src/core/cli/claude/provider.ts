@@ -257,8 +257,21 @@ export class ClaudeCodeProvider implements ChatProvider {
       throw err;
     } finally {
       if (started) await this.close(started);
-      // After a finished reply, start the next message's process now (INVARIANTS.md L8).
-      if (finished && !signal.aborted) this.startSpare(launch);
+      // After a finished reply, start the next message's process now, with the settings it will most likely use (INVARIANTS.md L8).
+      if (finished && !signal.aborted) {
+        const n = req.nextLikely;
+        this.startSpare(
+          n
+            ? {
+                command,
+                version,
+                model: n.model,
+                web: { search: n.web.search, pages: n.web.pages && this.deps.fetchMode() === 'claude' },
+                definitions: n.tools.filter((d) => (LEKTOR_MCP_TOOLS as readonly string[]).includes(d.name)),
+              }
+            : launch,
+        );
+      }
     }
   }
 

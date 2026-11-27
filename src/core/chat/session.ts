@@ -217,6 +217,18 @@ export class ChatSession {
       if (tools?.instructions) base.splice(prepared?.message ? 1 : 0, 0, { role: 'system', content: tools.instructions });
       if (tools?.fenced) base.push({ role: 'system', content: tools.fenced.instructions });
 
+      // After a preset run, the next message most likely has the chat's own settings: its model, the globe, and the
+      // tools a normal message gets. A backend that starts its next process ahead of time uses them (INVARIANTS.md L8).
+      const chatModel = this.#chat.model;
+      const nextLikely =
+        preset && caps.toolCalling === 'mcp' && chatModel !== null && chatModel.provider === model.provider
+          ? {
+              model: chatModel.model,
+              web: { search: this.#chat.toolsDisabled !== true, pages: this.#chat.toolsDisabled !== true },
+              tools: this.deps.tools?.forReply({ chat: this.#chat, capabilities: caps, contextUrls: prepared?.urls ?? [], editable })?.definitions ?? [],
+            }
+          : undefined;
+
       for (let round = 0; ; round++) {
         const rounds = this.#reply()?.steps ?? [];
         const extra = roundMessages(rounds, transient, replays);
@@ -241,7 +253,7 @@ export class ChatSession {
         const sink: { replay?: unknown } = {};
         const calls = await this.#streamRound(
           provider,
-          { model: model.model, messages: [...base, ...extra], ...(offered ? { tools: offered } : {}), ...(toolHost ? { toolHost } : {}), web },
+          { model: model.model, messages: [...base, ...extra], ...(offered ? { tools: offered } : {}), ...(toolHost ? { toolHost } : {}), web, ...(nextLikely ? { nextLikely } : {}) },
           signal,
           live,
           window,

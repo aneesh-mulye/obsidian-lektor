@@ -958,6 +958,7 @@ Added after milestone 10 (DESIGN.md § Decided). One Claude Code process may be 
   - **Single use:** each spare serves at most one message, and its input receives exactly one message.
   - **How many:** at most one spare is ever waiting.
   - **When one starts:** only after a reply that finished, and only while the setting is on and Lektor is loaded.
+  - **Which settings it gets:** those the next message will most likely use. After a normal message, that's the same settings. After a preset run, it's the chat's own settings without the preset (its model, the globe, and the tools a normal message gets), so a "Suggest fix" or a follow-up question finds it ready.
   - **Cleanup:** an unused spare is killed and its run folder removed: on a mismatch, after 10 idle minutes, if it dies, when the setting is turned off, and on unload.
   - **No conversation in files:** a spare's files hold no conversation or note text. Its prompt file is the constant instructions, which is true of every run now; notes reach Claude Code only on stdin.
   - **Tools before use:** a tool called on a waiting spare's MCP server runs nothing.
@@ -974,6 +975,14 @@ Added after milestone 10 (DESIGN.md § Decided). One Claude Code process may be 
 - **Measured** with Claude Code 2.1.332 on haiku, about 14k tokens of context, and a 2 s pause between messages:
   - **Overhead outside the API:** 513 ms on the first (fresh) process, then 56, 57 and 55 ms on the spares.
   - **Caching:** reads grew 14,412 → 14,662 tokens, with 433–498 written fresh per turn. Caching held after the context moved into the message.
+- **After a preset run** (added the same day): the session tells the provider the settings the next message will most likely use (the chat's model, the globe and the normal tools), and the spare gets those. Five broken versions of this were all caught: the provider ignoring the hint; the session sending none; the preset's model, the preset's tools, or web tools regardless of the globe, used in the hint.
+- **Checked in a real Obsidian** (2026-11-27, Claude Code 2.1.332, haiku, in a separate instance; the stored version-4 settings with a `cli` section migrated to `warm: true`):
+  - A spare (haiku, web tools, normal Lektor tools) was waiting after the first reply.
+  - The next message ran on it: mid-reply, it was the only Claude Code process alive. Afterwards a new spare had replaced it, and the old folder was gone.
+  - Proofread ran on a fresh process, with no web tools and `report_findings`. The spare after it had the chat's normal settings, and the next message ran on it.
+  - Turning "Keep Claude Code ready" off removed the spare and its folder, and saved `warm: false`. Turning it on started no spare until a reply finished, then one.
+  - Disabling Lektor removed the spare and its folder, leaving no `lektor-` folders.
+  - The user's own Obsidian profile was unchanged.
 - **When Obsidian quits without unloading:** a waiting Claude Code exits about a second after its input closes. Only its small temporary folder (the fixed instructions and a stale MCP config, no notes) is left in the system temp directory.
 
 ### Mutation testing and regressions (milestone 10)

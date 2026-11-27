@@ -14,6 +14,7 @@ import type { Chat } from '../../src/core/chat/types';
 import type { PreparedContext } from '../../src/core/context/prepare';
 import { EMPTY_CONTEXT } from '../../src/core/context/state';
 import { proposeEditTool } from '../../src/core/review/tools';
+import { reportFindingsTool } from '../../src/core/findings/findings';
 import { ToolRegistry } from '../../src/core/tools/registry';
 import { PROSE, toolRuns } from '../../src/core/tools/run';
 import { FakeSpawner, type FakeRun, type Script, cc, flag, mcpCall } from './cli.fakes';
@@ -23,10 +24,11 @@ const NOTE = 'The the lighthouse was finished in 1844.';
 interface World {
   session: ChatSession;
   spawner: FakeSpawner;
+  provider: ClaudeCodeProvider;
   seen: { tools?: string[]; system?: string; results: string[] };
 }
 
-function world(script: (run: FakeRun, seen: World['seen']) => Script, opts: { pages?: 'claude' | 'lektor' } = {}): World {
+function world(script: (run: FakeRun, seen: World['seen']) => Script, opts: { pages?: 'claude' | 'lektor'; warm?: boolean } = {}): World {
   const seen: World['seen'] = { results: [] };
   const spawner = new FakeSpawner((run) => script(run, seen));
   const provider = new ClaudeCodeProvider({
@@ -36,11 +38,14 @@ function world(script: (run: FakeRun, seen: World['seen']) => Script, opts: { pa
     selfTest: { read: () => Promise.resolve({ version: '2.1.332', at: 0, ok: true }), write: () => Promise.resolve() },
     now: () => 1,
     randomToken: () => 't',
+    warm: () => opts.warm ?? false,
+    schedule: () => () => undefined,
   });
   const registry = new ToolRegistry();
   registry.register(proposeEditTool({ readNote: () => Promise.resolve(NOTE), isExcluded: () => false, exists: () => true, newId: () => `p${Math.random()}`, now: () => 0 }));
   // A stand-in for fetch_page that always asks first.
   registry.register({ name: 'fetch_page', description: 'Fetch a page.', schema: z.object({ url: z.string() }), approval: 'ask', touchesVault: false, run: (a) => Promise.resolve({ content: `PAGE ${a.url}`, summary: a.url }) });
+  registry.register(reportFindingsTool({ readNote: () => Promise.resolve(NOTE), newId: () => `f${Math.random()}`, now: () => 0 }));
   registry.register({ name: 'web_search', description: 'Search.', schema: z.object({ query: z.string() }), approval: 'never', touchesVault: false, run: () => Promise.resolve({ content: 'results', summary: 's' }) });
   const tools = toolRuns(registry, {
     webNames: () => ['web_search', 'fetch_page'],
@@ -66,7 +71,7 @@ function world(script: (run: FakeRun, seen: World['seen']) => Script, opts: { pa
     prepare: () => Promise.resolve(prepared),
     tools,
   });
-  return { session, spawner, seen };
+  return { session, spawner, provider, seen };
 }
 
 const settle = async (w: World, until: () => boolean = () => !w.session.busy) => {
@@ -143,6 +148,39 @@ describe('Claude Code replies (INVARIANTS.md L6)', () => {
     const run = w.spawner.runs.find((r) => r.args[0] === '-p')!;
     const blocks = (JSON.parse(run.stdin) as { message: { content: Array<{ text: string }> } }).message.content.map((b) => b.text);
     expect(blocks).toEqual([`${FROM_LEKTOR}CONTEXT: Drafts/Essay.md\n${NOTE}`, `${FROM_LEKTOR}${PROSE}`, 'User:\nHi.']);
+  });
+
+  it('L8: after a preset run, the spare is started with the chat’s own settings, not the preset’s', async () => {
+    const w = world(() => ({ lines: [cc.init([]), cc.text('Found nothing.'), cc.result()] }), { warm: true });
+    const proofread = { id: 'proofread', name: 'Proofread', icon: 'spell-check', tools: [], output: 'findings' as const, prompt: 'Proofread.', model: { provider: 'claude-code', model: 'opus' } };
+    w.session.send('', proofread);
+    await settle(w);
+    await w.provider.spareSettled();
+    const [run, spare] = w.spawner.runs.filter((r) => r.args[0] === '-p');
+    // The preset run itself: its own model, no web tools, report_findings.
+    expect(flag(run!.args, '--model')).toBe('opus');
+    expect(flag(run!.args, '--tools')).toBe('');
+    expect(run!.args.filter((a) => a.startsWith('mcp__lektor__'))).toEqual(['mcp__lektor__report_findings']);
+    // The spare: the chat's model, the globe's web tools, the tools a normal message gets.
+    expect(spare!.stdin).toBe('');
+    expect(flag(spare!.args, '--model')).toBe('haiku');
+    expect(flag(spare!.args, '--tools')).toBe('WebSearch,WebFetch');
+    expect(spare!.args.filter((a) => a.startsWith('mcp__lektor__'))).toEqual(['mcp__lektor__propose_edit']);
+    // So the next normal message uses it.
+    w.session.send('Thanks. Fix the first one.');
+    await settle(w);
+    await w.provider.spareSettled();
+    expect(spare!.stdin).toContain('Fix the first one.');
+    // With the globe off, the spare after a preset run gets no web tools either.
+    w.session.setTools(false);
+    w.session.send('', { ...proofread, tools: ['web_search', 'fetch_page'] });
+    await settle(w);
+    await w.provider.spareSettled();
+    const last = w.spawner.runs.filter((r) => r.args[0] === '-p').at(-1)!;
+    expect(last.stdin).toBe('');
+    expect(flag(last.args, '--tools')).toBe('');
+    expect(flag(last.args, '--model')).toBe('haiku');
+    await w.provider.dispose();
   });
 
   it('L6: with the globe off, Claude Code gets no web tools at all', async () => {

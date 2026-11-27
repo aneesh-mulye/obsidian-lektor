@@ -72,6 +72,11 @@ export interface ChatRequest {
   toolHost?: ToolHost;
   /** For backends with their own web tools: whether they may search and fetch for this reply (the globe, a preset's tools). */
   web?: { search: boolean; pages: boolean };
+  /**
+   * For backends that start the next process ahead of time (Claude Code's warm spare): the settings the next message
+   * will most likely use, when they differ from this reply's (after a preset run, the chat's own). INVARIANTS.md L8.
+   */
+  nextLikely?: { model: string; web: { search: boolean; pages: boolean }; tools: ToolDefinition[] };
 }
 
 /** Lektor's tools for one reply, as an MCP backend calls them. Calls run one at a time. */

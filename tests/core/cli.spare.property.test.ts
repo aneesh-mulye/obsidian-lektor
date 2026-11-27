@@ -95,12 +95,14 @@ function world(): World {
   return w;
 }
 
-function request(s: Settings, text: string): ChatRequest {
+/** A message with these settings; `next` is what the session says the next message will most likely use (after a preset run). */
+function request(s: Settings, text: string, next?: Settings): ChatRequest {
   return {
     model: s.model,
     web: s.web,
     messages: [{ role: 'system', content: 'CONTEXT note text' }, { role: 'user', content: text }],
     toolHost: { definitions: defs(s.tools), call: () => Promise.resolve({ content: 'ran', isError: false }) },
+    ...(next ? { nextLikely: { model: next.model, web: next.web, tools: defs(next.tools) } } : {}),
   };
 }
 
@@ -116,7 +118,11 @@ function check(w: World): void {
     if (idle.includes(r)) {
       expect(readFileSync(join(rootOf(r), 'system.txt'), 'utf8')).toBe(CLAUDE_CODE_INSTRUCTIONS);
       expect(readdirSync(r.cwd)).toEqual([]);
-      expect(flag(r.args, '--model')).toBe((JSON.parse(w.spare!) as Settings).model);
+      // The waiting spare was started with exactly the settings it should have.
+      const want = JSON.parse(w.spare!) as Settings;
+      expect(flag(r.args, '--model')).toBe(want.model);
+      expect(flag(r.args, '--tools')).toBe([...(want.web.search ? ['WebSearch'] : []), ...(want.web.pages ? ['WebFetch'] : [])].join(','));
+      expect(r.args.filter((a) => a.startsWith('mcp__lektor__')).sort()).toEqual(want.tools.map((t) => `mcp__lektor__${t}`).sort());
     } else {
       expect(existsSync(rootOf(r)), `${rootOf(r)} left behind`).toBe(false);
     }
@@ -136,16 +142,17 @@ const cmd = (name: string, run: (w: World) => Promise<void>): Cmd => ({
   toString: () => name,
 });
 
-const sendCmd = ([i, outcome]: [number, Outcome]): Cmd =>
-  cmd(`send(${i}, ${outcome})`, async (w) => {
+const sendCmd = ([i, outcome, n]: [number, Outcome, number | null]): Cmd =>
+  cmd(`send(${i}, ${outcome}${n === null ? '' : `, then likely ${n}`})`, async (w) => {
     const s = SETTINGS[i]!;
+    const next = n === null ? undefined : SETTINGS[n]!;
     w.next = outcome;
     const before = chats(w).length;
     const spareRun = waiting(w)[0];
     const matched = w.spare === key(s);
     const ctl = new AbortController();
     const events: ChatEvent[] = [];
-    for await (const e of w.provider.stream(request(s, `message ${before}`), ctl.signal)) {
+    for await (const e of w.provider.stream(request(s, `message ${before}`, next), ctl.signal)) {
       events.push(e);
       if (outcome === 'abort' && e.type === 'text') ctl.abort();
     }
@@ -168,10 +175,13 @@ const sendCmd = ([i, outcome]: [number, Outcome]): Cmd =>
     // A spare starts only after a finished reply, while on and loaded: otherwise no process starts beyond the one the message needs.
     const started = chats(w).length - before;
     expect(started).toBe((matched ? 0 : 1) + (outcome === 'ok' && w.warm && !w.disposed ? 1 : 0));
-    w.spare = outcome === 'ok' && w.warm && !w.disposed ? key(s) : null;
+    // The spare gets the settings the next message will most likely use: this message's, or those the session named.
+    w.spare = outcome === 'ok' && w.warm && !w.disposed ? key(next ?? s) : null;
   });
 
-const send = fc.tuple(fc.nat({ max: SETTINGS.length - 1 }), fc.constantFrom<Outcome>('ok', 'ok', 'ok', 'error', 'abort')).map(sendCmd);
+const send = fc
+  .tuple(fc.nat({ max: SETTINGS.length - 1 }), fc.constantFrom<Outcome>('ok', 'ok', 'ok', 'error', 'abort'), fc.option(fc.nat({ max: SETTINGS.length - 1 }), { nil: null, freq: 3 }))
+  .map(sendCmd);
 const commands = fc.commands(
   [
     // Messages are what this test is about, so they are listed four times; unload, which ends spares for good, once.
