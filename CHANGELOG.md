@@ -8,6 +8,7 @@ Fixes the warnings from the Community directory's first review.
 
 - Findings in a note are underlined with a dotted border instead of a styled text underline, which older Obsidian versions only partly support. They look the same.
 - A popover in the context bar no longer refers to `globalThis`, for compatibility with popout windows.
+- For models without tool calling, proposed edits and findings are read whole even when they contain backticks, for example an edit to a note with a code block. Before, the backticks ended the block early and the proposal was lost.
 
 ## 0.1.0
 

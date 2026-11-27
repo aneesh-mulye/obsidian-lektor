@@ -11,6 +11,7 @@
  * which goes through review like any other.
  */
 
+import { fencedBlocks } from '../tools/fence';
 import { z } from 'zod';
 import type { ToolRun } from '../chat/types';
 import type { ModelRef } from '../providers/types';
@@ -145,7 +146,6 @@ export function reportFindingsTool(deps: FindingsDeps): Tool<ReportFindingsArgs>
   };
 }
 
-const FENCE = /```lektor-findings[^\n]*\n([\s\S]*?)```/g;
 
 /** For models without tool calling: findings in fenced `lektor-findings` blocks. */
 export function fencedFindings(deps: FindingsDeps, editable: ReadonlySet<string>, known: KnownUrls, model: ModelRef | null): NonNullable<ToolRun['fenced']> {
@@ -160,10 +160,10 @@ export function fencedFindings(deps: FindingsDeps, editable: ReadonlySet<string>
     async extract(reply) {
       const findings: FindingSet[] = [];
       const problems: string[] = [];
-      for (const [i, m] of [...reply.matchAll(FENCE)].entries()) {
+      for (const [i, body] of fencedBlocks(reply, 'lektor-findings').entries()) {
         let value: unknown;
         try {
-          value = JSON.parse(m[1]!);
+          value = JSON.parse(body);
         } catch {
           problems.push(`Block ${i + 1} is not valid JSON.`);
           continue;

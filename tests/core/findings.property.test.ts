@@ -125,6 +125,18 @@ describe('findings (INVARIANTS.md F1)', () => {
     );
   });
 
+  it('F1 regression (CI seed 814839752): backticks in an explanation don\u2019t end a fenced block early', async () => {
+    const t = "mat. cat, the on it's\ncat. cat. mat it's there\nteh\nmat 日本. ";
+    const notes = new Map([['a.md', t]]);
+    const editable = new Set(['a.md']);
+    const args = { path: 'a.md', findings: [{ quote: 'the', kind: 'typo', explanation: '```' }, { quote: 'mat.', kind: 'typo', explanation: '' }, { quote: 'the', kind: 'typo', explanation: '' }] } as ReportFindingsArgs;
+    const direct = await makeFindings(args, editable, known(), MODEL, deps(notes));
+    const r = await fencedFindings(deps(notes), editable, known(), MODEL).extract(`Here you are.\n\`\`\`lektor-findings\n${JSON.stringify(args)}\n\`\`\`\nDone.`);
+    const strip = (s: FindingSet | null | undefined) => s?.findings.map(({ id: _id, ...f }) => f);
+    expect(strip(r.findings?.[0])).toEqual(strip(direct.set));
+    expect(strip(r.findings?.[0])?.map((f) => f.quote)).toEqual(['mat.']);
+  });
+
   it('F1: broken fenced blocks are reported, not thrown', async () => {
     const fenced = fencedFindings(deps(new Map([['a.md', 'the cat sat']])), new Set(['a.md']), known(), MODEL);
     const r = await fenced.extract('```lektor-findings\nnot json\n```\n```lektor-findings\n{"findings": []}\n```\n```lektor-findings\n{"path": "z.md", "findings": [{"quote": "cat", "kind": "typo", "explanation": ""}]}\n```');

@@ -3,6 +3,7 @@
 
 /** propose_edit and propose_note, and the fenced `lektor-edit` fallback (DESIGN.md § Proposal format). */
 
+import { fencedBlocks } from '../tools/fence';
 import type { ToolRun } from '../chat/types';
 import type { ModelRef } from '../providers/types';
 import { type Tool, ToolError } from '../tools/types';
@@ -78,7 +79,6 @@ export function proposeNoteTool(deps: ReviewToolDeps): Tool<ProposeNoteArgs> {
   };
 }
 
-const FENCE = /```lektor-edit[^\n]*\n([\s\S]*?)```/g;
 
 /** For models without tool calling: edits proposed in fenced `lektor-edit` blocks in the reply. */
 export function fencedEdits(deps: ReviewToolDeps, editable: ReadonlySet<string>, model: ModelRef | null): NonNullable<ToolRun['fenced']> {
@@ -93,10 +93,10 @@ export function fencedEdits(deps: ReviewToolDeps, editable: ReadonlySet<string>,
     async extract(reply) {
       const proposals: Proposal[] = [];
       const problems: string[] = [];
-      for (const [i, m] of [...reply.matchAll(FENCE)].entries()) {
+      for (const [i, body] of fencedBlocks(reply, 'lektor-edit').entries()) {
         let value: unknown;
         try {
-          value = JSON.parse(m[1]!);
+          value = JSON.parse(body);
         } catch {
           problems.push(`Block ${i + 1} is not valid JSON.`);
           continue;

@@ -678,6 +678,7 @@ Shared generator, the **preset world**: preset files made of random bytes, near-
   - Reporting findings never writes to the vault.
 - **Counterexample means:** a highlight points at the wrong passage, or a model-made URL becomes a link the user might click.
 
+- **Regression (CI seed 814839752, release 0.1.1):** a fenced block ended at the first three backticks anywhere, even inside a JSON string. So an explanation of three backticks, or an edit to a note with a code block, lost the whole block; the B4 edit parser had the same flaw. Fences now open and close only at the start of a line, as in CommonMark (`src/core/tools/fence.ts`). `tests/core/fence.property.test.ts` checks that blocks of any JSON come back whole and in order, among other code blocks. Its first run also found that a fence written mid-line inside another block's JSON opened a block; that was fixed too.
 ### F2. Highlights match the findings — active
 
 `tests/core/findings.property.test.ts`
