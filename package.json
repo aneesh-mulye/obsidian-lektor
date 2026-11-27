@@ -1,6 +1,6 @@
 {
   "name": "obsidian-lektor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "An Obsidian sidebar chat that sees only the context you give it and changes nothing without per-hunk approval.",
   "main": "main.js",
   "private": true,

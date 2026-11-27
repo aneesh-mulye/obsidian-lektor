@@ -1,7 +1,7 @@
 {
   "id": "lektor",
   "name": "Lektor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "minAppVersion": "1.15.1",
   "description": "Review your notes with an LLM that sees only what you share: proofread, flag hard-to-parse sentences and fact-check, with every edit approved hunk by hunk.",
   "author": "Aneesh Mulye",
