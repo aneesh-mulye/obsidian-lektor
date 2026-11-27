@@ -912,6 +912,35 @@ Shared generator, the **bridge world**: random bridge options (model aliases, in
   - **What the model sees:** exactly the visible transcript and the chips, as with every other backend (C1, X2).
 - **Counterexample means:** Claude Code changes notes, reads context or fetches past Lektor's gates.
 
+### L7. Claude Code prompts are complete and prefix-stable — active
+
+Added after milestone 10, from a measurement on 2026-11-27. Five turns on haiku, with about 14k tokens of context:
+
+- **Before:** sending the earlier turns as one changing block meant the cache never matched past the context. Every message wrote the whole history fresh (824 → 1,090 tokens per turn, growing).
+- **With a long-lived process:** only the newest exchange was written.
+- **Process start-up:** each per-message process cost about 0.5–0.7 s of overhead.
+
+`tests/core/cli.property.test.ts`
+
+- **Generator:** random visible transcripts: user turns, assistant turns with and without tool calls, tool results, Unicode, and text that looks like turn labels. With and without context images. Then one more exchange (an assistant reply and a new user message).
+- **Properties:**
+  - **Prefix-stable:** the stdin message's content blocks for the longer conversation begin with exactly the blocks for the shorter one. Claude Code caches up to the end of each request, so the next request reads the whole earlier conversation from the cache.
+  - **Complete:** every visible turn appears exactly once, in order, as its own block, with its exact text. The last block is the newest user message, and nothing else is added.
+  - **The system prompt** depends only on the system messages (Lektor's context and a preset's prompt), never on the transcript, so it stays cached across turns.
+- **Counterexample means:** every message re-processes the whole history (more delay, and more of the user's plan used), or the model sees turns altered or out of order.
+- **After the change, measured the same way:**
+  - The tokens read from the cache grew with the conversation: 14,335 → 14,452 → 14,554 → 14,590.
+  - Fresh writes stayed level at 400–480 tokens per turn. About 365 of those are something Claude Code adds after the conversation; each request writes them again. The long-lived process wrote 158–522 per turn.
+  - The process start-up overhead is unchanged, at about 0.5 s per message.
+  - The model handled the format: same answers as before.
+- **Mutation testing:** five broken versions of the prompt builder, all caught:
+  - a header on the newest message;
+  - tool calls left out;
+  - the transcript leaking into the system prompt;
+  - images after their note;
+  - a turn dropped.
+  The one about images was caught only after the test pinned the exact block order.
+
 ### Mutation testing and regressions (milestone 10)
 
 - **25 mutants, all killed.** They covered:
