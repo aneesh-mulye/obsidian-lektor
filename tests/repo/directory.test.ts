@@ -126,7 +126,13 @@ describe('The directory’s review rules (INVARIANTS.md U4)', () => {
       // Comments may name the folder; code must use vault.configDir.
       const code = s.code.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
       expect(code, s.path).not.toMatch(/['"`/]\.obsidian\b/);
+      // From the 0.1.0 review: no globalThis, even as a type (use window or activeWindow).
+      expect(code, s.path).not.toMatch(/\bglobalThis\b/);
     }
+    // From the 0.1.0 review's CSS lint: only a plain line in text-decoration, and none of its extras.
+    const css = read('styles.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const m of css.matchAll(/text-decoration\s*:\s*([^;]+);/g)) expect(m[1]!.trim(), m[0]).toMatch(/^(none|underline|line-through|overline)$/);
+    expect(css).not.toMatch(/text-decoration-(thickness|style|color)|text-underline-offset/);
   });
 
   it('U4: the manifest and versions.json are as the directory expects', () => {

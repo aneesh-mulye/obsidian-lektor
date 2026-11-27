@@ -232,7 +232,7 @@ function DepthMenu(props: { chip: NoteChip; ui: ContextUi; window: number | null
   const { chip, ui, window, otherTokens, calibration, onClose } = props;
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const away = (e: globalThis.MouseEvent) => {
+    const away = (e: Event) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
     const esc = (e: KeyboardEvent) => e.key === 'Escape' && onClose();

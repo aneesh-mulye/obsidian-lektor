@@ -827,9 +827,8 @@
 :is(.lektor-finding, .lektor-finding-row, .lektor-finding-card).is-other { --lektor-tone: var(--color-blue-rgb); }
 
 .lektor-finding {
-  text-decoration: underline dotted rgb(var(--lektor-tone));
-  text-decoration-thickness: 2px;
-  text-underline-offset: 3px;
+  /* A dotted border, not text-decoration's style, colour and thickness: Obsidian's CSS review flags those. */
+  border-bottom: 2px dotted rgb(var(--lektor-tone));
   background: rgba(var(--lektor-tone), 0.08);
 }
 
