@@ -52,6 +52,7 @@ None of these is protectable expression, and there are no shared files, function
 | `main.js`, `manifest.json` and `styles.css` attached as binary assets | Fixed now: the workflow attaches all three. |
 | Fixes ship as new versions; tags are never reused | Done by process. `npm version <x.y.z>` runs `version-bump.mjs`, which updates `manifest.json` and `versions.json` together, and `.npmrc` (`tag-version-prefix=""`) makes its git tag exactly the version, with no `v`. |
 | A GitHub Actions workflow that builds and attaches the assets on a tag, and fails if the tag and version differ | Fixed now: `.github/workflows/release.yml`. On a pushed tag it checks the tag against `manifest.json` and `versions.json`, runs lint, the tests and the build, and creates a **draft** release with the three files, which you publish after a look. |
+| Release titles and notes (added after the first review) | Fixed: releases are named "Lektor x.y.z", and their notes are that version's section of `CHANGELOG.md` plus GitHub's changelog link. The workflow refuses a version with no section, and a repository test checks there is one for the manifest's version. |
 
 ## manifest.json
 

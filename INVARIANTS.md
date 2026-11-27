@@ -1201,7 +1201,7 @@ The aim here is a plugin that's easy to find your way around and ready for the c
   - `versions.json` maps its version to its `minAppVersion`.
 - **Names:** no command or settings heading starts with the plugin's name, and no heading says "settings" or "options".
 - **The README** opens with a "Privacy and network use" section: what the model sees and changes, network use, accounts and files outside the vault. It says there is no telemetry, and it credits LLM Hub and Smart Composer (docs/PUBLISHING.md).
-- **Releases:** a release workflow builds on a pushed tag only if the tag equals the manifest's version. It runs lint and the tests, then attaches `main.js`, `manifest.json` and `styles.css`.
+- **Releases:** a release workflow builds on a pushed tag only if the tag equals the manifest's version. It runs lint and the tests, then attaches `main.js`, `manifest.json` and `styles.css` to a release named "Lektor x.y.z". The release's notes are that version's section of `CHANGELOG.md`, which a repository test requires for the manifest's version.
 - **Linting:** Obsidian's own review rules (`eslint-plugin-obsidianmd`) are part of `npm run lint`.
 - **Counterexample means:** a review comment, or a policy breach, waiting to happen.
 

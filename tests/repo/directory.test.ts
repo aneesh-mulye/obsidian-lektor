@@ -173,6 +173,19 @@ describe('The directory’s review rules (INVARIANTS.md U4)', () => {
     expect(wf).toMatch(/gh release create "\$GITHUB_REF_NAME" main\.js manifest\.json styles\.css/);
     expect(wf).toContain('npm run lint');
     expect(wf).toContain('npm test');
+    // A proper title and notes: "Lektor x.y.z", and the version's CHANGELOG.md section.
+    expect(wf).toContain('--title "Lektor $GITHUB_REF_NAME"');
+    expect(wf).toContain('--notes-file "$RUNNER_TEMP/notes.md"');
+  });
+
+  it('U4: CHANGELOG.md has notes for the manifest’s version (the release workflow needs them)', () => {
+    const version = (JSON.parse(read('manifest.json')) as { version: string }).version;
+    const log = read('CHANGELOG.md');
+    const at = log.indexOf(`\n## ${version}\n`);
+    expect(at, `CHANGELOG.md has no "## ${version}" section`).toBeGreaterThan(-1);
+    const rest = log.slice(at + version.length + 5);
+    const section = rest.slice(0, rest.search(/\n## |$/));
+    expect(section.trim().length).toBeGreaterThan(40);
   });
 
   it('U4: the review’s own ESLint rules are part of npm run lint', () => {
