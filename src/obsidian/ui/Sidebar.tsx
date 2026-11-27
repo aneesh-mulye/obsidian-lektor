@@ -166,14 +166,21 @@ const MODES: Record<DisplayMode, { title: string; icon: string }> = {
   inline: { title: 'Inline: review changes in the note', icon: 'highlighter' },
 };
 
+/** The CLI bridges' own tool activity: name prefix, who ran it, and the verb for pages. */
+const NATIVE_ACTIVITY: ReadonlyArray<readonly [string, string, string]> = [
+  ['cc_', 'Claude Code', 'fetched'],
+  ['codex_', 'Codex', 'opened'],
+];
+
 function toolsState(on: boolean, caps: Capabilities | null, searchConfigured: boolean): { label: string; warn: boolean } {
   const next = ' Changes apply from your next message.';
   if (!on) return { label: `Tools off: no web search or page fetching.${next}`, warn: false };
-  // Claude Code searches (and maybe fetches) on its own, as in its own app (DESIGN.md § Decided, before milestone 10).
+  // Claude Code and Codex search (and maybe fetch) on their own, as in their own apps (DESIGN.md § Decided, before milestones 10 and 11).
   if (caps?.nativeWebSearch) {
+    const by = caps.nativeWebBy ?? 'Claude Code';
     return caps.nativeWebFetch
-      ? { label: `Tools on: Claude Code searches the web and fetches pages itself, as in its own app.${next}`, warn: false }
-      : { label: `Tools on: Claude Code searches the web itself; Lektor fetches pages, asking first for ones that didn't come from a search, your messages or your notes.${next}`, warn: false };
+      ? { label: `Tools on: ${by} searches the web and ${by === 'Codex' ? 'opens' : 'fetches'} pages itself, as in its own app.${next}`, warn: false }
+      : { label: `Tools on: ${by} searches the web itself; Lektor fetches pages, asking first for ones that didn't come from a search, your messages or your notes.${next}`, warn: false };
   }
   if (caps && caps.toolCalling !== 'native' && caps.toolCalling !== 'mcp') return { label: "Tools are on, but this model can't call tools.", warn: true };
   if (!searchConfigured) return { label: `Tools on: page fetching only. Set up a search provider in Lektor's settings for web search.${next}`, warn: true };
@@ -416,19 +423,24 @@ function ToolRoundView({ round, card }: { round: ToolRound; card: Cards }) {
     if (c.result?.ok) parts.push(`Reported ${c.result.summary}`);
     else if (c.result) parts.push('Findings could not be placed');
   }
-  // What Claude Code ran itself: said plainly, so it's clear Lektor didn't vet it.
-  const ccSearches = round.calls.filter((c) => c.name === 'cc_web_search');
-  const ccFetches = round.calls.filter((c) => c.name === 'cc_web_fetch');
-  const ccOther = round.calls.filter((c) => c.name.startsWith('cc_') && c.name !== 'cc_web_search' && c.name !== 'cc_web_fetch');
-  if (ccSearches.length > 0) parts.push(`Claude Code searched: ${ccSearches.length} ${ccSearches.length === 1 ? 'query' : 'queries'}`);
-  if (ccFetches.length > 0) parts.push(`Claude Code fetched ${ccFetches.length} ${ccFetches.length === 1 ? 'page' : 'pages'}`);
-  if (ccOther.length > 0) parts.push(`Claude Code tried ${ccOther.length} other ${ccOther.length === 1 ? 'tool' : 'tools'}`);
+  // What Claude Code or Codex ran itself: said plainly, so it's clear Lektor didn't vet it.
+  let native = 0;
+  for (const [prefix, by, fetched] of NATIVE_ACTIVITY) {
+    const own = round.calls.filter((c) => c.name.startsWith(prefix));
+    const s = own.filter((c) => c.name === `${prefix}web_search`).length;
+    const f = own.filter((c) => c.name === `${prefix}web_fetch`).length;
+    const o = own.length - s - f;
+    native += own.length;
+    if (s > 0) parts.push(`${by} searched: ${s} ${s === 1 ? 'query' : 'queries'}`);
+    if (f > 0) parts.push(`${by} ${fetched} ${f} ${f === 1 ? 'page' : 'pages'}`);
+    if (o > 0) parts.push(`${by} tried ${o} other ${o === 1 ? 'tool' : 'tools'}`);
+  }
   const requests = round.calls.filter((c) => c.name === 'request_context');
   for (const c of requests) {
     if (c.result?.ok) parts.push(`Asked for context: ${c.result.summary}`);
     else if (c.result) parts.push('A context request failed');
   }
-  const others = round.calls.length - searches.length - fetches.length - proposals.length - requests.length - reports.length - ccSearches.length - ccFetches.length - ccOther.length;
+  const others = round.calls.length - searches.length - fetches.length - proposals.length - requests.length - reports.length - native;
   if (others > 0) parts.push(`${others} other tool ${others === 1 ? 'call' : 'calls'}`);
   if (round.calls.some((c) => c.result?.limit)) parts.push('limit reached');
   if (round.calls.some((c) => !c.result)) parts.push('working…');

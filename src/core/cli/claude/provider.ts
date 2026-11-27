@@ -129,7 +129,7 @@ export class ClaudeCodeProvider implements ChatProvider {
 
   async capabilities(): Promise<Capabilities> {
     await this.installed();
-    return { toolCalling: 'mcp', nativeWebSearch: true, nativeWebFetch: this.deps.fetchMode() === 'claude', images: true, contextWindow: CLAUDE_CONTEXT };
+    return { toolCalling: 'mcp', nativeWebSearch: true, nativeWebFetch: this.deps.fetchMode() === 'claude', nativeWebBy: 'Claude Code', images: true, contextWindow: CLAUDE_CONTEXT };
   }
 
   /** The stored self-test result for the installed version, if any (for settings). */

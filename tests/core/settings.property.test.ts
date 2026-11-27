@@ -32,6 +32,7 @@ import {
   validV5Settings,
   validV6Settings,
   validV7Settings,
+  validV8Settings,
   endpoint,
   toolSettings,
 } from './settings.arbitraries';
@@ -149,8 +150,8 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v1;
         expect(store.settings).toEqual({
           ...rest,
-          version: 8,
-          cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true } },
+          version: 9,
+          cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true }, codex: { enabled: false, path: '', web: 'codex' } },
           models: DEFAULT_SETTINGS.models,
           context: { ...rest.context, respectObsidianExclusions: true },
           tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
@@ -169,8 +170,8 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
         const { version: _v, ...rest } = v2;
         expect(store.settings).toEqual({
           ...rest,
-          version: 8,
-          cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true } },
+          version: 9,
+          cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true }, codex: { enabled: false, path: '', web: 'codex' } },
           models: { ...rest.models, ollama: { ...rest.models.ollama, contextLength: 32768 }, endpoints: [] },
           context: { ...rest.context, respectObsidianExclusions: true },
           tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools },
@@ -186,7 +187,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV3Settings, (v3) => {
         const store = SettingsStore.load(disk(v3));
         const { version: _v, ...rest } = v3;
-        expect(store.settings).toEqual({ ...rest, version: 8, models: { ...rest.models, endpoints: [] }, tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools }, presets: { hidden: [] }, cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true } } });
+        expect(store.settings).toEqual({ ...rest, version: 9, models: { ...rest.models, endpoints: [] }, tools: { ...DEFAULT_SETTINGS.tools, ...rest.tools }, presets: { hidden: [] }, cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true }, codex: { enabled: false, path: '', web: 'codex' } } });
         expect(store.settings.tools.searchProvider).toBe('none');
         expect(store.settings.tools.secrets).toEqual({ tavily: '', exa: '', brave: '' });
         expect(store.problems).toEqual([]);
@@ -199,7 +200,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV4Settings, (v4) => {
         const store = SettingsStore.load(disk(v4));
         const { version: _v, ...rest } = v4;
-        expect(store.settings).toEqual({ ...rest, version: 8, models: { ...rest.models, endpoints: [] }, presets: { hidden: [] }, cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true } } });
+        expect(store.settings).toEqual({ ...rest, version: 9, models: { ...rest.models, endpoints: [] }, presets: { hidden: [] }, cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true }, codex: { enabled: false, path: '', web: 'codex' } } });
         expect(store.problems).toEqual([]);
       }),
     );
@@ -210,7 +211,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV5Settings, (v5) => {
         const store = SettingsStore.load(disk(v5));
         const { version: _v, ...rest } = v5;
-        expect(store.settings).toEqual({ ...rest, version: 8, models: { ...rest.models, endpoints: [] }, cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true } } });
+        expect(store.settings).toEqual({ ...rest, version: 9, models: { ...rest.models, endpoints: [] }, cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true }, codex: { enabled: false, path: '', web: 'codex' } } });
         expect(store.problems).toEqual([]);
       }),
     );
@@ -259,7 +260,7 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV6Settings, (v6) => {
         const store = SettingsStore.load(disk(v6));
         const { version: _v, ...rest } = v6;
-        expect(store.settings).toEqual({ ...rest, version: 8, cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true } } });
+        expect(store.settings).toEqual({ ...rest, version: 9, cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true }, codex: { enabled: false, path: '', web: 'codex' } } });
         expect(store.settings.cli.claudeCode.enabled).toBe(false);
         expect(store.problems).toEqual([]);
       }),
@@ -271,7 +272,18 @@ describe('SettingsStore (INVARIANTS.md S1–S5)', () => {
       fc.property(validV7Settings, (v7) => {
         const store = SettingsStore.load(disk(v7));
         const { version: _v, ...rest } = v7;
-        expect(store.settings).toEqual({ ...rest, version: 8, cli: { claudeCode: { ...rest.cli.claudeCode, warm: true } } });
+        expect(store.settings).toEqual({ ...rest, version: 9, cli: { claudeCode: { ...rest.cli.claudeCode, warm: true }, codex: { enabled: false, path: '', web: 'codex' } } });
+        expect(store.problems).toEqual([]);
+      }),
+    );
+  });
+
+  it('S13: version-8 settings migrate to version 9 losslessly, with the Codex bridge off', () => {
+    fc.assert(
+      fc.property(validV8Settings, (v8) => {
+        const store = SettingsStore.load(disk(v8));
+        const { version: _v, ...rest } = v8;
+        expect(store.settings).toEqual({ ...rest, version: 9, cli: { ...rest.cli, codex: { enabled: false, path: '', web: 'codex' } } });
         expect(store.problems).toEqual([]);
       }),
     );

@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 
-export const SETTINGS_VERSION = 8;
+export const SETTINGS_VERSION = 9;
 
 /** The effective exclusion list while the stored one is unreadable. */
 export const EXCLUDE_EVERYTHING: readonly string[] = Object.freeze(['**']);
@@ -181,6 +181,15 @@ const SECTIONS = {
       /** Keep one Claude Code process started ahead of time, so replies start sooner (about 200 MB while it waits). */
       warm: z.boolean(),
     }),
+    codex: z.strictObject({
+      /** Off until the user opts in (DESIGN.md § Subscriptions and terms). */
+      enabled: z.boolean(),
+      /** The `codex` executable ('' = look on PATH and the usual places). */
+      // eslint-disable-next-line no-control-regex -- control characters are exactly what we reject
+      path: z.union([z.literal(''), z.string().max(1024).regex(/^\/[^\u0000-\u001f]*$/)]),
+      /** Who does web work: Codex itself (its live search, which opens pages too), or Lektor (its search and fetch, with approvals). */
+      web: z.enum(['codex', 'lektor']),
+    }),
   }),
   presets: z.strictObject({
     /** Built-in presets the user hid (DESIGN.md § Presets). */
@@ -229,7 +238,7 @@ export const DEFAULT_SETTINGS: Settings = deepFreeze({
     secrets: { tavily: '', exa: '', brave: '' },
   },
   privacy: { storeFullTranscripts: false },
-  cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true } },
+  cli: { claudeCode: { enabled: false, path: '', pages: 'claude', warm: true }, codex: { enabled: false, path: '', web: 'codex' } },
   presets: { hidden: [] },
 });
 
@@ -272,6 +281,8 @@ const MIGRATIONS: Record<number, (raw: Record<string, unknown>) => Record<string
   4: (raw) => ({ ...raw, version: 5, ...(Object.hasOwn(raw, 'presets') ? {} : { presets: { hidden: [] } }) }),
   // 6 → 7: the Claude Code bridge (off).
   6: (raw) => ({ ...raw, version: 7, ...(Object.hasOwn(raw, 'cli') ? {} : { cli: { claudeCode: { enabled: false, path: '', pages: 'claude' } } }) }),
+  // 8 → 9: the Codex bridge (off).
+  8: (raw) => ({ ...raw, version: 9, ...(Object.hasOwn(raw, 'cli') ? { cli: addMissing(raw['cli'], 'codex', { enabled: false, path: '', web: 'codex' }) } : {}) }),
   // 7 → 8: keep a Claude Code process ready (on).
   7: (raw) => ({ ...raw, version: 8, ...(Object.hasOwn(raw, 'cli') ? { cli: mapField(raw['cli'], 'claudeCode', (c) => addMissing(c, 'warm', true)) } : {}) }),
   // 5 → 6: OpenAI- and Anthropic-compatible endpoints (none).

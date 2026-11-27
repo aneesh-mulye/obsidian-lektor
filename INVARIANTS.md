@@ -1019,6 +1019,136 @@ Probing the flags first (DESIGN.md § Decided, before milestone 10) took about t
 
 The user's own Obsidian profile was unchanged before and after.
 
+## Milestone 11: Codex bridge
+
+Codex 0.162.1 was checked on 2026-11-27 (DESIGN.md § Decided, before milestone 11). Codex puts the model's tools in the request, not in its events, so the deterministic check runs Codex against a scripted model on Lektor's loopback server and reads the request.
+
+### C1. The Codex lockdown is unconditional — active
+
+`tests/core/codex.property.test.ts`
+
+- **Generator:**
+  - **models:** valid ones, and strings with spaces, quotes, `=`, newlines or leading dashes;
+  - **web:** on or off;
+  - **Lektor tools:** any subset;
+  - **images:** 0–3;
+  - **feature lists:** random names, stages (stable, experimental, under development, deprecated, removed) and on/off values, always including the vetted features and some real names (`shell_tool`, `view_image`, `hooks`, `image_generation`).
+- **Properties:**
+  - **Present:** every argument list starts with `exec --json --ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config`. It contains `-C <void> --sandbox read-only`, `approval_policy="never"`, `project_doc_max_bytes=0`, the skills, agents, apps, plugins and history keys, `sqlite_home`, `log_dir`, `model_instructions_file` and `model_catalog_json` inside the run folder, and Lektor's MCP server with its token taken from the environment. It ends with `-`.
+  - **Features:** every listed feature that isn't removed and isn't vetted is disabled, except a deprecated one that is already off. No vetted feature is disabled, and nothing is ever enabled.
+  - **Absent:** never any of these: `--dangerously-bypass-approvals-and-sandbox`, `--dangerously-bypass-hook-trust`, `--full-auto`, `--yolo`, `--approve-for-me`, `--add-dir`, `--oss`, `--profile`/`-p`, `--worktree`, `--enable`, `--search`, `danger-full-access`, `workspace-write`, `resume`. No `-c` key outside the fixed set, and no MCP server but `lektor`.
+  - **Web:** `web_search` is `"live"` only when web is on and Codex does web work, otherwise `"disabled"`.
+  - **Refused:** an invalid model name, a feature name that isn't a plain identifier, or an empty feature list, so the run fails closed.
+  - **Nothing private in argv:** no conversation text, context or token. Those go to stdin, the files and the environment.
+  - **A snapshot test** pins the exact list for one input.
+- **Counterexample means:** a refactor dropped a lockdown flag, or Codex could get a file, shell or patch tool (hard rule 2).
+
+### C2. The per-run model catalog changes only the tool fields — active
+
+`tests/core/codex.property.test.ts`
+
+- **Generator:** catalogs of random model entries (random extra fields, nested values), and model names that are in the catalog or not.
+- **Properties:**
+  - The written catalog holds exactly one entry: Codex's own entry for that model, unchanged, except that `apply_patch_tool_type` is `null` and `experimental_supported_tools` is `[]`.
+  - A model that isn't in the catalog is refused.
+  - The model list Lektor shows is the catalog's visible models, in its order.
+- **Counterexample means:** `apply_patch` or the clock tools come back, or Codex runs a model with metadata Lektor changed by mistake.
+
+### C3. Codex's events become chat events exactly — active
+
+`tests/core/codex.property.test.ts`
+
+- **Generator:** random JSONL streams:
+  - **items:** agent messages, reasoning, web searches (search, open_page, find_in_page and other actions, with results), Lektor MCP tool calls, errors (warnings);
+  - **endings:** `turn.completed` with usage, `turn.failed`, or a top-level `error`;
+  - **noise:** junk lines and unknown types, and a stream that just ends.
+- **Properties:**
+  - **Ending:** exactly one `done`, and it comes last. An ended stream with no `turn.completed` gives an error first. `turn.failed` or a top-level `error` gives an error and `done: error`.
+  - **Text:** the reply text is the agent messages in order, joined by blank lines, each exactly as sent. The reasoning is the reasoning items' text.
+  - **Codex's web work:** each completed web search gives one `codex_web_search` activity (a search) or `codex_web_fetch` activity (opening or searching in a page), with its query or URL and the result URLs.
+  - **Lektor's tools:** MCP calls to Lektor's tools give no activity, because Lektor already records them.
+  - **Never** throws.
+  - **Usage:** input tokens include the cached ones.
+- **Counterexample means:** a reply is lost, doubled or cut, or Codex's own web work goes unshown.
+
+### C4. Codex prompts are complete and prefix-stable — active
+
+`tests/core/codex.property.test.ts`
+
+- **Generator:** as L7, with the prompt as one stdin text and context images as files.
+- **Properties:**
+  - **Prefix-stable:** the next message's prompt begins with this message's prompt, leaving out this reply's own instruction.
+  - **Complete:** every visible turn appears once, in order, in the same block format as Claude Code's (L7).
+  - **Images:** the image files are the context images, in order, and the same each turn.
+  - **Constant files:** the instructions file never depends on the conversation.
+  - **The run's folders:** two runs in one session use the same working folder.
+- **Counterexample means:** the conversation stops being cached, or the model sees turns altered or out of order.
+
+### C5. The Codex self-test fails closed — active
+
+`tests/core/codex.property.test.ts`
+
+- **Generator:**
+  - **inventory runs:** the tool list offered at the top and inside code mode, with an extra tool, a missing `exec`, another MCP server's tool, or non-empty resource lists; instructions other than Lektor's; a canary in any request; no second request; a request carrying another token;
+  - **real runs:** command, file-change and other item types, a canary in a message, reasoning or tool result, an unfinished run.
+- **Properties:**
+  - **The inventory** passes only if all of these hold:
+    - the tools are exactly the allowed ones (Lektor's tools offered, Codex's MCP-resource tools, `exec`, `wait`, `request_user_input`);
+    - both resource lists are empty;
+    - the first developer message is exactly Lektor's instructions;
+    - no canary appears in any request;
+    - every request carried the run's token.
+  - **The real check** passes only if it finished, reported no item outside messages, reasoning, web searches and Lektor MCP calls, and no canary appears in its output.
+  - **Caching:** a pass is cached for 24 hours, the real check per version and the inventory per version and model. A failure is never cached as a pass.
+- **Counterexample means:** Codex could run with a file tool, or after reading a file, and Lektor wouldn't notice.
+
+### C6. A Codex reply goes through Lektor's review and approvals (session) — active
+
+`tests/core/codex.session.test.ts`, with a fake Codex
+
+- **Generator:** a scripted fake Codex that calls Lektor's tools over the real loopback MCP server and prints JSONL.
+- **Properties:**
+  - **Same tools as everyone:** calls run through the same tool run as every backend (approvals, caps, proposals), and the proposal lands in the chat.
+  - **Codex's searches** show as "Codex searched" steps.
+  - **The globe off:** `web_search="disabled"`.
+  - **With Lektor doing web work:** Codex's search is off, and Lektor's `web_search` and `fetch_page` are offered over MCP.
+  - **Stop** ends the process at once.
+  - **Run folders:** after every run, whether finished, failed or stopped, the run folder is gone. The shared working folder stays empty, and unload removes it.
+- **Counterexample means:** Codex could bypass review or approvals, or files and processes pile up.
+
+### Mutation testing and regressions (milestone 11)
+
+- **Mutation testing:** 39 broken versions of the bridge, all caught (`codex.property`, `codex.session` and the source tests, at CI counts).
+  - **Caught first time:**
+    - **Arguments:** the lockdown flags dropped or changed; `shell_tool` vetted; deprecated features handled wrongly; live search in the check; any model name or path accepted; an unreadable feature line tolerated.
+    - **Catalog and events:** `apply_patch` or the experimental tools kept; hidden models shown; Lektor's calls shown twice; no `done` on failure; messages run together; lines after the end read; pages opened shown as searches.
+    - **Checks and provider:** every one of the inventory's and the real check's checks removed; either check skipped; the run folder left behind; Stop not killing; images per run; web ignoring the setting; the shared folder kept on unload; the prompt joined wrongly; image names not by content.
+  - **Caught only after new tests:**
+    - The working folder per run: the test compared the process's folder but not `-C`.
+    - A failed inventory remembered as a pass. A second message would then have skipped the check, so this mattered. No test sent a second message after a failure; one does now.
+    - The working folder's emptiness check removed.
+- **A real bug the new test found:** a shared working folder that wasn't empty was dropped but never deleted. It is now removed, and the next reply gets a fresh one.
+- **Test-side mistakes, now fixed:**
+  - **C3 model:** it ignored lines after a stream that never ended.
+  - **The real-check property:** it returned `expect(...)`'s value, which fast-check read as `false`.
+  - **The session helper:** it waited for a reply that was meant to be paused.
+  - **Leftover folders:** test worlds now dispose their provider, so no shared folder outlives a test.
+- **Checked against the real Codex 0.162.1:**
+  - **The inventory fails when the lockdown is broken:** with `shell_tool` and `view_image` left on, it reported `exec_command`, `write_stdin` and `view_image`; with `apply_patch` left in the catalog, it reported `request_user_input_async`. The clean inventory passes in about 1.6 s.
+- **Checked in a real Obsidian** (2026-11-27, separate instance, `gpt-6-luna`):
+  - **Settings:** they migrated from version 4 to 9 with the Codex section.
+  - **The first message:** the real check and the inventory ran first, then "OK" in 13 s.
+  - **Proofread:** 6 findings through `report_findings`, with Codex's search off.
+  - **Web search:** Codex searched on its own and cited the official site.
+  - **Proposals:** `propose_edit` gave a proposal for review.
+  - **`request_context`:** the share card appeared, and after Share all the model quoted the shared note.
+  - **The globe:** off gave `web_search="disabled"`; on, the tooltip named Codex.
+  - **Folders:** every chat run used one shared working folder; the checks used their own.
+  - **Unload:** no folders or processes were left.
+  - **`~/.codex`:** no file there contains the essay's text. Only Codex's own model cache (refreshed by `codex debug models`) and a temporary lock folder changed.
+  - **The user's Obsidian profile** was unchanged.
+- **Caching across replies is best effort:** Codex sets `prompt_cache_key` to a new session id in every process, and there is no setting for it. In three measured turns, the second read 12,672 tokens from cache, from its own first request, made before the web search; the third read none. The prompt's start is kept identical (shared working folder, images named by content) so a cache hit is possible whenever OpenAI routes there.
+
 ## Starting list from the design doc (planned)
 
 These come from `docs/DESIGN.md` § Testing. Each gets a full generator, property and counterexample entry when its milestone starts.

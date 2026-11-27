@@ -12,6 +12,7 @@ import type { EndpointAccess } from './core/providers/compat';
 import { OpenAICompatProvider } from './core/providers/openai';
 import { ProviderError } from './core/providers/stream';
 import { ClaudeCodeProvider } from './core/cli/claude/provider';
+import { CodexProvider } from './core/cli/codex/provider';
 import type { SelfTestRecord } from './core/cli/claude/selftest';
 import { executableCandidates, findExecutable } from './core/cli/fs';
 import { nodeSpawner } from './core/cli/spawn';
@@ -46,6 +47,7 @@ export default class LektorPlugin extends Plugin {
   editLog!: EditLog;
   /** The Claude Code bridge, while it is turned on (DESIGN.md § Backends). */
   claudeCode: ClaudeCodeProvider | null = null;
+  codex: CodexProvider | null = null;
   /** For the settings tab's "Test connection" on an endpoint. */
   checkEndpoint: (e: ReadonlyEndpoint) => Promise<string> = () => Promise.resolve('Lektor is still loading.');
   /** Presets (DESIGN.md § Presets): the built-ins and the files in `presets/`. */
@@ -94,8 +96,25 @@ export default class LektorPlugin extends Plugin {
         return err instanceof Error && err.message ? err.message : `Could not reach ${e.name}.`;
       }
     };
-    // The Claude Code bridge (DESIGN.md § Decided, before milestone 10): off until the user opts in. Self-test results live in Lektor's own data.
+    // The CLI bridges (DESIGN.md § Decided, before milestones 10 and 11): off until the user opts in. Self-test results live in
+    // Lektor's own data, one record per bridge in one file.
     const selfTestKey = 'cli-selftest';
+    const readRecords = async (): Promise<Record<string, unknown>> => {
+      const text = await storage.read('meta', selfTestKey).catch(() => null);
+      try {
+        const all: unknown = text === null ? {} : JSON.parse(text);
+        return typeof all === 'object' && all !== null && !Array.isArray(all) ? (all as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
+    };
+    const selfTestStore = (bridge: 'claude' | 'codex') => ({
+      read: async (): Promise<SelfTestRecord | null> => {
+        const r = (await readRecords())[bridge] as SelfTestRecord | undefined;
+        return r && typeof r.version === 'string' && typeof r.at === 'number' && typeof r.ok === 'boolean' ? r : null;
+      },
+      write: async (r: SelfTestRecord) => storage.write('meta', selfTestKey, JSON.stringify({ ...(await readRecords()), [bridge]: r })),
+    });
     const claudeCode = new ClaudeCodeProvider({
       command: async () => {
         const configured = settings().cli.claudeCode.path;
@@ -103,27 +122,29 @@ export default class LektorPlugin extends Plugin {
       },
       spawner: nodeSpawner,
       fetchMode: () => settings().cli.claudeCode.pages,
-      selfTest: {
-        read: async () => {
-          const text = await storage.read('meta', selfTestKey).catch(() => null);
-          try {
-            const r = text === null ? null : (JSON.parse(text) as { claude?: SelfTestRecord }).claude;
-            return r && typeof r.version === 'string' && typeof r.at === 'number' && typeof r.ok === 'boolean' ? r : null;
-          } catch {
-            return null;
-          }
-        },
-        write: (r) => storage.write('meta', selfTestKey, JSON.stringify({ claude: r })),
-      },
+      selfTest: selfTestStore('claude'),
       now: () => Date.now(),
       randomToken: () => crypto.randomUUID().replace(/-/g, ''),
       // One process started ahead of time, while the bridge and the setting are on (INVARIANTS.md L8).
       warm: () => settings().cli.claudeCode.enabled && settings().cli.claudeCode.warm,
     });
     this.claudeCode = claudeCode;
+    const codex = new CodexProvider({
+      command: async () => {
+        const configured = settings().cli.codex.path;
+        return configured !== '' ? findExecutable([configured]) : findExecutable(executableCandidates('codex', process.env['PATH']));
+      },
+      spawner: nodeSpawner,
+      webMode: () => settings().cli.codex.web,
+      selfTest: selfTestStore('codex'),
+      now: () => Date.now(),
+      randomToken: () => crypto.randomUUID().replace(/-/g, ''),
+    });
+    this.codex = codex;
     const providers = (): ChatProvider[] => {
       const out: ChatProvider[] = [this.ollama];
       if (settings().cli.claudeCode.enabled) out.push(claudeCode);
+      if (settings().cli.codex.enabled) out.push(codex);
       for (const e of settings().models.endpoints) {
         const sig = JSON.stringify(e);
         let entry = compat.get(e.id);
@@ -428,6 +449,7 @@ export default class LektorPlugin extends Plugin {
     this.chats?.dispose();
     // No Claude Code process or temp folder outlives Lektor.
     void this.claudeCode?.dispose();
+    void this.codex?.dispose();
   }
 
   async saveSettings(): Promise<void> {

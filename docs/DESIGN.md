@@ -115,7 +115,7 @@ interface ChatProvider {
 | OpenAI-compatible | `/v1/chat/completions` (LM Studio, vLLM, llama.cpp, gateways) | Native `tools` | Lektor's search tools |
 | Anthropic-compatible | `/v1/messages` | Native `tools` | Lektor's search tools |
 | Claude Code | Spawned `claude -p`, stream-json in and out | Lektor tools via loopback MCP | Its own `WebSearch` / `WebFetch` |
-| Codex | Spawned `codex exec --json`, `resume` per turn | Lektor tools via loopback MCP | Its own (`--search`) |
+| Codex | Spawned `codex exec --json`, one process per reply (decided before milestone 11) | Lektor tools via loopback MCP, called from Codex's code mode | Its own live `web_search`, or Lektor's (a setting) |
 
 **On OpenCode for Ollama search:** not needed. Lektor's own tool loop gives any tool-calling local model search directly, which is simpler than running another agent as a bridge. OpenCode can be added later as a sixth adapter if wanted.
 
@@ -136,19 +136,30 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
 - `--permission-mode dontAsk` + `--permission-prompts none` + `--allowedTools`: anything not allowed is denied rather than prompted.
 - The MCP config (with its per-run token) and the system prompt are files in the run folder, never in argv.
 
-**Codex lockdown.** Same empty folder, plus a plugin-owned `CODEX_HOME` holding only a symlink to the user's `auth.json`, so the user's `config.toml`, MCP servers and global `AGENTS.md` are not loaded:
+**Codex lockdown.** Verified against Codex 0.162.1 (see Decided, before milestone 11). Codex runs in an empty folder outside the vault (`<system temp>/lektor-<random>/void/`, one for the Obsidian session), signed in as the user through their own `~/.codex`, with everything else in that home ignored:
 
 ```
-codex exec --json --skip-git-repo-check -C <void> --sandbox read-only \
-  -c approval_policy="never" -c features.shell_tool=false \
-  -c features.apps=false -c features.multi_agent=false \
-  -c features.view_image=false -c features.memories=false \
-  -c mcp_servers.lektor.url="http://127.0.0.1:<port>/mcp" --search -
+codex exec --json --ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules --strict-config \
+  -C <void> --sandbox read-only -m <model> \
+  -c approval_policy="never" -c web_search="live"|"disabled" -c project_doc_max_bytes=0 \
+  -c skills.include_instructions=false -c skills.bundled.enabled=false -c agents.enabled=false \
+  -c apps._default.enabled=false -c plugins._default.enabled=false -c personality="none" \
+  -c history.persistence="none" -c sqlite_home="<run>/state" -c log_dir="<run>/log" \
+  -c model_instructions_file="<run>/system.txt" -c model_catalog_json="<run>/models.json" \
+  -c mcp_servers.lektor.url="http://127.0.0.1:<port>/mcp" -c mcp_servers.lektor.bearer_token_env_var="LEKTOR_MCP_TOKEN" \
+  -c mcp_servers.lektor.required=true -c mcp_servers.lektor.default_tools_approval_mode="approve" \
+  -c mcp_servers.lektor.tool_timeout_sec=3600 -c model_reasoning_summary="auto" \
+  --disable <every feature but the vetted few>… [-i <run>/image-N.png…] -
 ```
 
-- `features.shell_tool=false` removes command execution, which is how Codex reads files ([config reference](https://learn.chatgpt.com/docs/config-file/config-reference)); `--sandbox read-only` blocks writes as a second layer.
-- Web search toggle off → drop `--search` and set `-c web_search="disabled"`.
-- The `CODEX_HOME` trick needs verifying on the installed version (see Risks).
+- `--ignore-user-config`: the user's `config.toml`, its MCP servers, profiles and hooks don't load; sign-in still comes from `~/.codex`, which Lektor never reads. `--ephemeral` and `history.persistence="none"` keep no session or history, and `sqlite_home` and `log_dir` put Codex's state and logs in the run folder, removed afterwards.
+- **Features: all off but a vetted few.** For each Codex version Lektor reads `codex features list` and disables every feature that isn't removed, except `code_mode_host`, `enable_request_compression` and `system_proxy_fallback` (deprecated features already off are left alone; disabling them only prints warnings). A feature added in a later version is off until vetted. If the list can't be read, Codex doesn't run.
+- **The model catalog** (`models.json`) is Codex's own entry for the chosen model with `apply_patch_tool_type` and `experimental_supported_tools` emptied. That removes `apply_patch` and the clock tools, and stops Codex refreshing its model list.
+- **What's left:** `exec` (JavaScript in a V8 isolate, with no file system, network, Node or imports), `wait` and `request_user_input`. Inside `exec`: Lektor's MCP tools and Codex's MCP-resource tools, which reach only Lektor's server, and it has no resources. With the globe on, there's also the hosted `web_search`. The self-test checks this list exactly.
+- `--strict-config`: a key a later version renames or drops fails the run instead of being ignored.
+- `model_instructions_file` replaces Codex's built-in instructions with Lektor's; `project_doc_max_bytes=0` keeps AGENTS.md out.
+- The MCP token travels in an environment variable, never in argv. The prompt goes on stdin.
+- With the globe off, or with Lektor doing web work (a setting), `web_search="disabled"`.
 
 **Subscriptions and terms.** Both bridges run the official CLIs as installed and signed in; Lektor never reads, copies or forwards OAuth tokens. Anthropic's terms forbid using subscription tokens in third-party tools; spawning the official `claude` binary is a different thing, but the settings page links the current terms and the user decides.
 
@@ -330,7 +341,7 @@ One right-sidebar view, three stacked zones, nothing else on screen by default.
 | Presets | `<plugin dir>/presets/*.md` | See Presets |
 | AI undo history | Plugin data, history/\<note-id>.jsonl (permanent) | Append-only; follows renames; cleared only on request |
 | CLI working folder | `<system temp>/lektor-<random>/void/` | Fresh and empty for every run, removed afterwards; never inside the vault (decided before milestone 10) |
-| Codex home | `<plugin dir>/codex-home/` | Only a symlink to `~/.codex/auth.json` |
+| Codex home | The user's own `~/.codex`, for sign-in only | Its config is ignored; Codex's state and logs go to the run folder (decided before milestone 11) |
 
 **Privacy guarantees**
 
@@ -395,7 +406,7 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
 8. **Presets.** Preset files, settings form, the three built-ins, findings rendering, "Suggest fix", slash commands, command palette entries.
 9. **OpenAI- and Anthropic-compatible adapters.**
 10. **Claude Code bridge.** Lift and trim LLM Hub's spawner, void folder, lockdown flags, loopback MCP server for Lektor tools, lockdown self-test.
-11. **Codex bridge.** Same, plus the isolated `CODEX_HOME`, `exec --json` + `resume`.
+11. **Codex bridge.** Same, plus all features off but a vetted few, a per-run model catalog, and a two-part self-test (decided before milestone 11).
 12. **Polish.** Empty state, tooltips and hotkeys, narrow-sidebar layout, README with screenshots.
 
 ## Risks and open questions
@@ -404,8 +415,8 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
 | --- | --- | --- |
 | `--safe-mode` may also block `--mcp-config` | Claude Code would lose Lektor's tools | Confirmed on 2.1.332: it does. `--safe-mode` is not used; `--setting-sources ""` and `--restricted` keep settings, hooks and plugins out instead (Decided, before milestone 10) |
 | `--tools ""` once failed to disable tools (closed as resolved April 2026) | Rule 2 | The lockdown self-test catches it on every CLI version |
-| Isolated `CODEX_HOME` with a symlinked `auth.json` may not keep the session signed in, or token refresh may write back elsewhere | Codex bridge fails to start | Test on the installed version; fall back to the user's `CODEX_HOME` with every feature and MCP server overridden by `-c` flags |
-| Codex may gain a non-shell file tool in a future version | Rule 2 | Self-test, plus snapshot tests of flags; review Codex release notes when upgrading |
+| Isolated `CODEX_HOME` with a symlinked `auth.json` may not keep the session signed in, or token refresh may write back elsewhere | Codex bridge fails to start | Not used: Codex uses the user's own home with `--ignore-user-config`; a real run changed no file in `~/.codex` (Decided, before milestone 11) |
+| Codex may gain a non-shell file tool in a future version | Rule 2 | New features are off until vetted; the self-test checks the exact tool list (inside code mode too) for each version and model; `--strict-config` fails on renamed keys |
 | Anthropic's subscription terms for wrapping `claude -p` are a grey area | Account risk | Settings page links the current terms; the user opts in to each bridge |
 | Dot-folder presets can't be opened in Obsidian's editor | Raw editing needs the settings form or an external editor | Acceptable; switchable to a visible folder + "Excluded files" |
 | Small local models handle tool calling unreliably | Searches and edit proposals fail | Fenced-block fallback; validate every tool call; show raw output on parse errors |
@@ -465,6 +476,21 @@ Build in this order; each milestone ends usable and with its tests passing. Don'
     - stream-json input accepts image blocks.
     - The full list is in `src/core/cli/claude/args.ts`, guarded by a snapshot test (INVARIANTS.md L1).
   - **Nothing private in the command line:** the MCP config (with its per-run token) and the system prompt go in files in the run folder (mode 0700), never in argv, which other local users can read.
+- *(2026-11-27, before milestone 11)* The Codex bridge.
+  - **The user's choices:** Codex uses the user's own home (`~/.codex`) with its config ignored, not a plugin-owned `CODEX_HOME` with a linked `auth.json`. A token refresh during a Lektor run could otherwise leave the user's own Codex signed out. Features are all off but a vetted few, not a fixed list. Live checks may use any model.
+  - **Code mode:** in Codex 0.162.1 every listed model is `code_mode_only`. The model has one real tool, `exec`, and calls every other tool, Lektor's included, from JavaScript run in a V8 isolate. Checked with a scripted model: the isolate has no `require`, `process`, `fetch`, `Deno` or WebAssembly, and refuses imports, including `file://`. Without `code_mode_host` no tool can be called at all, so it is vetted.
+  - **`apply_patch` removed through the model catalog:** with the read-only sandbox and `approval_policy="never"` its writes were refused, inside the working folder and outside it. But an "Update File" patch makes Codex read the target to match lines, and the error tells the model whether the guessed lines were there, which is a way to probe files. `include_apply_patch_tool=false` no longer works; a per-run catalog with `apply_patch_tool_type` emptied does.
+  - **Nothing kept in `~/.codex`:** in a real run with search and a Lektor tool call, no file in `~/.codex` changed, and the prompt's canary appeared nowhere in it.
+  - **One process per reply, no `resume`:** `--ephemeral` keeps no session to resume. The visible transcript goes in the stdin prompt, one block per turn, in the same format as Claude Code's (INVARIANTS.md L7), and context images go as `-i` files in the run folder.
+  - **One working folder per Obsidian session:** Codex writes the working folder's path into the prompt before Lektor's text, so a new folder every run would stop the conversation from being cached. One empty `lektor-<random>/void` serves every run of the session (it is checked empty before each) and is removed on unload; each run's own files live in a separate run folder.
+  - **Web:** by default Codex's own live `web_search`, which searches and opens pages; the chat shows "Codex searched" and "Codex opened" lines, as for Claude Code. A setting hands web work to Lektor instead: Codex's search is disabled and Lektor's `web_search` and `fetch_page` go over the MCP server, with their approvals. Codex's search can't be split into search and fetch, so the setting covers both.
+  - **No streaming:** `codex exec --json` gives each message whole, so a Codex reply appears when it's done; its searches and Lektor tool calls show as they happen.
+  - **Caching is best effort:** Codex gives each process its own `prompt_cache_key` (a new session id), and no setting changes it, so a later reply reads the conversation from OpenAI's cache only when its request lands where the cache is. Lektor keeps the prompt's start identical (one working folder, context images named by their content in the session's folder), so a hit is always possible; Codex's app-server, which keeps a session, is experimental and was not used.
+  - **Context images** are written as files in the session's folder, beside its empty `void/`, named by a hash of their content. Codex writes their paths into the prompt, so the same image keeps the same path. They are removed with the folder on unload.
+  - **Models** come from `codex debug models`, which refreshes Codex's list (`--bundled` if that fails); hidden models are left out.
+  - **The self-test has two parts.**
+    - **The inventory** is free and local. It runs the same command, but with Codex's model provider pointed at a scripted model on Lektor's loopback server, so no request leaves the machine and no sign-in is sent (the provider sends the run's token). The scripted model lists every tool inside code mode. The check passes only if the tools are exactly the expected ones, both MCP resource lists are empty, Lektor's instructions are the only ones, and no canary reaches the model: not from the working folder, not from outside it, and not from an AGENTS.md. It runs for each model before its first chat each day.
+    - **The real check** is one short request per Codex version per day, on the smallest model. That model is asked to read both canaries. The check passes only if Codex reports nothing but messages, reasoning, web searches and calls to Lektor's tools, and neither canary appears in the output.
 - *(2026-11-26)* UI checks run against a separate Obsidian instance (its own profile folder) on a copy of the fixtures vault, driven with Playwright.
 
 - Link depth follows outgoing links. Backlinks are sent as a list (no content) by default; a toggle adds their contents.

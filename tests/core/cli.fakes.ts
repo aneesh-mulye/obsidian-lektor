@@ -12,6 +12,8 @@ export interface FakeRun {
   args: readonly string[];
   cwd: string;
   stdin: string;
+  /** The extra environment the process was given. */
+  env: Readonly<Record<string, string>>;
   killed: boolean;
   /** Died on its own (see crash). */
   dead: boolean;
@@ -35,7 +37,7 @@ export class FakeSpawner implements Spawner {
   constructor(public script: (run: FakeRun) => Script) {}
 
   run(command: string, args: readonly string[], options: SpawnOptions): Spawned {
-    const run: FakeRun = { command, args: [...args], cwd: options.cwd, stdin: '', killed: false, dead: false, crash: () => undefined };
+    const run: FakeRun = { command, args: [...args], cwd: options.cwd, stdin: '', env: { ...(options.env ?? {}) }, killed: false, dead: false, crash: () => undefined };
     this.runs.push(run);
     const version = this.version;
     const isVersion = args.length === 1 && args[0] === '--version';

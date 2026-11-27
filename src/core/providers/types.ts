@@ -9,6 +9,8 @@ export interface Capabilities {
   nativeWebSearch: boolean;
   /** The backend fetches pages itself; Lektor then offers no fetch_page. */
   nativeWebFetch?: boolean;
+  /** Who does that native web work, as the chat names it ("Claude Code", "Codex"). */
+  nativeWebBy?: string;
   images: boolean;
   contextWindow: number;
 }

@@ -56,6 +56,19 @@ describe('CLI bridge sources (INVARIANTS.md L3, L4)', () => {
     const runs = [...provider.matchAll(/spawner\.run\((?:l\.)?command, ([^,]+),/g)].map((m) => m[1]!.trim());
     expect([...provider.matchAll(/spawner\.run\(/g)]).toHaveLength(runs.length);
     expect(runs.sort()).toEqual(['["--version"]'.replace(/"/g, "'"), 'args', 'args'].sort());
-    for (const f of files) if (f !== 'src/core/cli/claude/provider.ts' && f !== 'src/core/cli/spawn.ts') expect(source(f), f).not.toMatch(/spawner\.run\(|nodeSpawner\.run\(/);
+    for (const f of files) if (!['src/core/cli/claude/provider.ts', 'src/core/cli/codex/provider.ts', 'src/core/cli/spawn.ts'].includes(f)) expect(source(f), f).not.toMatch(/spawner\.run\(|nodeSpawner\.run\(/);
+  });
+
+  it('C1: Codex is started only with arguments from codexArgs (or its fixed information commands)', () => {
+    const provider = source('src/core/cli/codex/provider.ts');
+    const runs = [...provider.matchAll(/spawner\.run\([^,]+, ([^,]+),/g)].map((m) => m[1]!.trim());
+    expect([...provider.matchAll(/spawner\.run\(/g)]).toHaveLength(runs.length);
+    expect(runs).toEqual(['args', 'args', 'args']);
+    // Every `args` a run uses is built by codexArgs; `capture` only ever gets the fixed information commands.
+    expect(new Set([...provider.matchAll(/const args = (\w+)\(/g)].map((m) => m[1]))).toEqual(new Set(['codexArgs']));
+    expect([...provider.matchAll(/this\.runToEnd\([^,]+, (\w+),/g)].map((m) => m[1])).toEqual(['args', 'args']);
+    const captures = [...provider.matchAll(/this\.capture\([^,]+, (\[[^\]]*\])\)/g)].map((m) => m[1]);
+    expect([...provider.matchAll(/this\.capture\(/g)]).toHaveLength(captures.length);
+    expect(new Set(captures)).toEqual(new Set(["['--version']", "['features', 'list']", "['debug', 'models']", "['debug', 'models', '--bundled']"]));
   });
 });

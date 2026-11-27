@@ -9,6 +9,10 @@
  * Streamable HTTP with plain JSON responses, tools only. Calls run one at a
  * time, through the reply's tool host (the same registry, approvals and caps
  * as every other backend). This is the only module that imports `http`.
+ *
+ * For Codex's inventory check (INVARIANTS.md C5) the same server can also play
+ * a scripted model at `/v1/responses`, under the same checks, so Codex can be
+ * run without any request leaving the machine.
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -16,6 +20,8 @@ import { type IncomingMessage, type ServerResponse, createServer } from 'node:ht
 import type { ToolHost } from '../providers/types';
 
 export const MCP_PATH = '/mcp';
+/** Where a scripted model answers, when one is asked for (Codex's inventory check). */
+export const MODEL_PATH = '/v1/responses';
 const MAX_BODY = 4 * 1024 * 1024;
 const SERVER_INFO = { name: 'lektor', version: '1' };
 const DEFAULT_PROTOCOL = '2025-06-18';
@@ -27,8 +33,8 @@ export interface McpRequest {
 }
 
 /** Why a request is refused (an HTTP status and text), or null if it may be answered. */
-export function refuse(req: McpRequest, expected: { token: string; port: number }): { status: number; text: string } | null {
-  if (req.path !== MCP_PATH) return { status: 404, text: 'Not found' };
+export function refuse(req: McpRequest, expected: { token: string; port: number; paths?: readonly string[] }): { status: number; text: string } | null {
+  if (!(expected.paths ?? [MCP_PATH]).includes(req.path)) return { status: 404, text: 'Not found' };
   if (req.headers['origin'] !== undefined) return { status: 403, text: 'Forbidden' };
   if (req.headers['host'] !== `127.0.0.1:${expected.port}`) return { status: 403, text: 'Forbidden' };
   const auth = req.headers['authorization'] ?? '';
@@ -106,18 +112,25 @@ export function serialHost(host: ToolHost): ToolHost {
 export interface McpServer {
   url: string;
   token: string;
+  /** The scripted model's base URL (`…/v1`), when one was asked for. */
+  modelUrl?: string;
   close(): Promise<void>;
 }
 
+/** A scripted model: one request body in, a Responses event stream (SSE text) out. */
+export type ScriptedModel = (body: string) => string;
+
 /** Start a run's server on 127.0.0.1 and a random port. */
-export function startMcpServer(host: ToolHost): Promise<McpServer> {
+export function startMcpServer(host: ToolHost, options: { model?: ScriptedModel } = {}): Promise<McpServer> {
   const token = randomBytes(32).toString('hex');
   const tools = serialHost(host);
+  const paths = options.model ? [MCP_PATH, MODEL_PATH] : [MCP_PATH];
   let port = 0;
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const headers: Record<string, string | undefined> = {};
     for (const [k, v] of Object.entries(req.headers)) headers[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : v;
-    const refused = refuse({ method: req.method ?? '', path: (req.url ?? '').split('?')[0] ?? '', headers }, { token, port });
+    const path = (req.url ?? '').split('?')[0] ?? '';
+    const refused = refuse({ method: req.method ?? '', path, headers }, { token, port, paths });
     if (refused) {
       res.writeHead(refused.status, { 'Content-Type': 'text/plain' }).end(refused.text);
       req.resume();
@@ -136,6 +149,17 @@ export function startMcpServer(host: ToolHost): Promise<McpServer> {
     });
     req.on('end', () => {
       if (res.writableEnded) return;
+      if (path === MODEL_PATH && options.model) {
+        let sse: string;
+        try {
+          sse = options.model(Buffer.concat(chunks).toString('utf8'));
+        } catch {
+          res.writeHead(500).end();
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' }).end(sse);
+        return;
+      }
       void answer(Buffer.concat(chunks).toString('utf8'), tools).then((out) => {
         if (out === null) res.writeHead(202).end();
         else res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(out));
@@ -150,6 +174,7 @@ export function startMcpServer(host: ToolHost): Promise<McpServer> {
       resolve({
         url: `http://127.0.0.1:${port}${MCP_PATH}`,
         token,
+        ...(options.model ? { modelUrl: `http://127.0.0.1:${port}/v1` } : {}),
         close: () =>
           new Promise<void>((done) => {
             server.closeAllConnections();
