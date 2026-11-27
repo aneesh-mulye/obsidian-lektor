@@ -63,9 +63,9 @@ const keyOf = (l: Launch): string =>
   JSON.stringify({ command: l.command, version: l.version, model: l.model, web: l.web, tools: l.definitions.map((d) => ({ name: d.name, description: d.description, parameters: d.parameters })) });
 
 const defaultSchedule = (ms: number, fn: () => void): (() => void) => {
-  const t: unknown = setTimeout(fn, ms);
+  const t: unknown = window.setTimeout(fn, ms);
   (t as { unref?: () => void }).unref?.();
-  return () => clearTimeout(t as Parameters<typeof clearTimeout>[0]);
+  return () => window.clearTimeout(t as number);
 };
 
 export interface ClaudeCodeDeps {
@@ -173,11 +173,11 @@ export class ClaudeCodeProvider implements ChatProvider {
       p.end();
       const stream = new ClaudeStream();
       let error: string | undefined;
-      const timer = setTimeout(() => p.kill(), 5 * 60 * 1000);
+      const timer = window.setTimeout(() => p.kill(), 5 * 60 * 1000);
       for await (const l of p.lines) {
         for (const e of stream.line(l)) if (e.type === 'error') error = e.message;
       }
-      clearTimeout(timer);
+      window.clearTimeout(timer);
       const exit = await p.exit;
       if (!stream.finished && exit.code !== 0) error = error ?? `Claude Code exited with ${exit.code ?? exit.signal ?? 'an error'}: ${p.stderr().trim().slice(-300)}`;
       return judgeSelfTest({ init: stream.init, toolUses: stream.toolUses, text: stream.seenText.join('\n'), finished: stream.finished, ...(error ? { error } : {}) }, [inside, outside]);

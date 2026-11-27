@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Aneesh Mulye
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { type App, Notice, type Plugin, PluginSettingTab, SecretComponent, Setting } from 'obsidian';
+import { type App, Notice, type Plugin, PluginSettingTab, SecretComponent, Setting, type SettingDefinitionItem, type SettingDefinitionPage, SettingPage } from 'obsidian';
 import { confirm } from './ConfirmModal';
 import { renderPresetSettings } from './PresetSettings';
 import { renderEndpointSettings } from './EndpointSettings';
@@ -58,6 +58,22 @@ const ATTACHMENT_LABELS: Record<AttachmentMode, string> = {
   upfront: 'Send up front',
 };
 
+/** One section of Lektor's settings, drawn imperatively as before. */
+class SectionPage extends SettingPage {
+  constructor(
+    title: string,
+    private readonly draw: (el: HTMLElement, redraw: () => void) => void,
+  ) {
+    super();
+    this.title = title;
+  }
+
+  display(): void {
+    this.containerEl.empty();
+    this.draw(this.containerEl, () => this.display());
+  }
+}
+
 export class LektorSettingTab extends PluginSettingTab {
   constructor(
     app: App,
@@ -66,23 +82,53 @@ export class LektorSettingTab extends PluginSettingTab {
     super(app, host);
   }
 
-  override display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
+  /** Redraws the page that is open (set by that page as it draws). */
+  private redraw: () => void = () => undefined;
+
+  /**
+   * Lektor's settings as one page per section, through Obsidian's declarative settings (1.13+): the settings
+   * search finds each section by its name and description, and each page is drawn by the same code as before.
+   */
+  override getSettingDefinitions(): SettingDefinitionItem[] {
+    const store = this.host.settingsStore;
+    const other = store.problems.filter((p) => p.path !== 'context.excludedFolders');
+    const page = (name: string, desc: string, draw: (el: HTMLElement) => void, warn?: () => boolean): SettingDefinitionPage => ({
+      type: 'page',
+      name,
+      desc,
+      ...(warn ? { status: () => (warn() ? 'warning' : null) } : {}),
+      page: () =>
+        new SectionPage(name, (el, redraw) => {
+          this.redraw = redraw;
+          draw(el);
+        }),
+    });
+    return [
+      ...(other.length > 0
+        ? [
+            {
+              name: 'Some saved settings could not be read',
+              desc: createFragment((f) => {
+                f.appendText('They are using their defaults: ');
+                f.appendText(other.map((p) => `${p.path || 'Settings file'}: ${p.message}`).join('; '));
+              }),
+            },
+          ]
+        : []),
+      page('Models', 'Ollama, and OpenAI- or Anthropic-compatible endpoints.', (el) => this.renderModels(el)),
+      page('Claude Code', 'Chat through the Claude Code CLI, locked down.', (el) => this.renderClaudeCode(el)),
+      page('Codex', 'Chat through the Codex CLI, locked down.', (el) => this.renderCodex(el)),
+      page('Context', 'Excluded folders, linked notes and attachments.', (el) => this.renderContext(el), () => !this.host.settingsStore.exclusionsIntact),
+      page('Tools', 'Web search provider, page fetching and limits.', (el) => this.renderTools(el)),
+      page('Review', 'How proposed changes are shown, and the AI edit history.', (el) => this.renderReview(el)),
+      page('Presets', 'Built-in and your own presets.', (el) => this.renderPresets(el)),
+      page('Privacy', 'What chat history keeps.', (el) => this.renderPrivacy(el)),
+    ];
+  }
+
+  private renderModels(containerEl: HTMLElement): void {
     const store = this.host.settingsStore;
     const s = store.settings;
-
-    const other = store.problems.filter((p) => p.path !== 'context.excludedFolders');
-    if (other.length > 0) {
-      const box = containerEl.createDiv({ cls: 'lektor-settings-warning' });
-      box.createEl('p', { text: 'Some saved settings could not be read and are using their defaults:' });
-      const list = box.createEl('ul');
-      for (const p of other) list.createEl('li', { text: `${p.path || 'Settings file'}: ${p.message}` });
-    }
-
-    // Models
-    new Setting(containerEl).setName('Models').setHeading();
-
     let urlDraft = s.models.ollama.baseUrl;
     new Setting(containerEl)
       .setName('Ollama server')
@@ -133,26 +179,28 @@ export class LektorSettingTab extends PluginSettingTab {
         },
         check: (e) => this.host.checkEndpoint(e),
       },
-      () => this.display(),
+      () => this.redraw(),
     );
-
+  }
+  private renderClaudeCode(containerEl: HTMLElement): void {
     renderClaudeCodeSettings(
       this.app,
       containerEl,
       { settings: () => this.host.settingsStore.settings, apply: (patch) => this.apply(patch), provider: this.host.claudeCode },
-      () => this.display(),
+      () => this.redraw(),
     );
-
+  }
+  private renderCodex(containerEl: HTMLElement): void {
     renderCodexSettings(
       this.app,
       containerEl,
       { settings: () => this.host.settingsStore.settings, apply: (patch) => this.apply(patch), provider: this.host.codex },
-      () => this.display(),
+      () => this.redraw(),
     );
-
-    // Context
-    new Setting(containerEl).setName('Context').setHeading();
-
+  }
+  private renderContext(containerEl: HTMLElement): void {
+    const store = this.host.settingsStore;
+    const s = store.settings;
     if (!store.exclusionsIntact) {
       containerEl.createDiv({
         cls: 'lektor-settings-warning',
@@ -210,12 +258,13 @@ export class LektorSettingTab extends PluginSettingTab {
         slider
           .setLimits(0, 3, 1)
           .setValue(s.context.maxLinkDepth)
-          .setDynamicTooltip()
+          
           .onChange((value) => void this.apply({ context: { maxLinkDepth: value } }).then(() => this.host.contextSettingsChanged())),
       );
-
-    // Tools
-    new Setting(containerEl).setName('Tools').setHeading();
+  }
+  private renderTools(containerEl: HTMLElement): void {
+    const store = this.host.settingsStore;
+    const s = store.settings;
 
     const t = s.tools;
     new Setting(containerEl)
@@ -225,7 +274,7 @@ export class LektorSettingTab extends PluginSettingTab {
         dropdown
           .addOptions(PROVIDER_LABELS)
           .setValue(t.searchProvider)
-          .onChange((value) => void this.apply({ tools: { searchProvider: value as SearchProviderId } }).then(() => this.display())),
+          .onChange((value) => void this.apply({ tools: { searchProvider: value as SearchProviderId } }).then(() => this.redraw())),
       );
 
     if (t.searchProvider === 'tavily' || t.searchProvider === 'exa' || t.searchProvider === 'brave') {
@@ -257,7 +306,7 @@ export class LektorSettingTab extends PluginSettingTab {
           button.setButtonText('Save').onClick(() => {
             const url = searxDraft.trim() === '' ? '' : normaliseBaseUrl(searxDraft);
             if (url === null) new Notice('Lektor: enter an http:// or https:// address.');
-            else void this.apply({ tools: { searxngUrl: url } }).then(() => this.display());
+            else void this.apply({ tools: { searxngUrl: url } }).then(() => this.redraw());
           }),
         );
     }
@@ -269,7 +318,7 @@ export class LektorSettingTab extends PluginSettingTab {
           slider
             .setLimits(1, 20, 1)
             .setValue(t.resultCount)
-            .setDynamicTooltip()
+            
             .onChange((value) => void this.apply({ tools: { resultCount: value } })),
         );
       new Setting(containerEl).setName('Safe search').addDropdown((dropdown) =>
@@ -309,7 +358,7 @@ export class LektorSettingTab extends PluginSettingTab {
         slider
           .setLimits(0, 50, 1)
           .setValue(s.tools.searchesPerMessage)
-          .setDynamicTooltip()
+          
           .onChange((value) => void this.apply({ tools: { searchesPerMessage: value } })),
       );
 
@@ -320,12 +369,13 @@ export class LektorSettingTab extends PluginSettingTab {
         slider
           .setLimits(0, 50, 1)
           .setValue(s.tools.fetchesPerMessage)
-          .setDynamicTooltip()
+          
           .onChange((value) => void this.apply({ tools: { fetchesPerMessage: value } })),
       );
-
-    // Review
-    new Setting(containerEl).setName('Review').setHeading();
+  }
+  private renderReview(containerEl: HTMLElement): void {
+    const store = this.host.settingsStore;
+    const s = store.settings;
 
     new Setting(containerEl)
       .setName('Default display mode')
@@ -343,7 +393,7 @@ export class LektorSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button
           .setButtonText('Clear all…')
-          .setWarning()
+          .setDestructive()
           .onClick(() => {
             void confirm(this.app, {
               title: 'Clear all AI edit history?',
@@ -356,8 +406,8 @@ export class LektorSettingTab extends PluginSettingTab {
             });
           }),
       );
-
-    // Presets
+  }
+  private renderPresets(containerEl: HTMLElement): void {
     renderPresetSettings(
       this.app,
       containerEl,
@@ -370,12 +420,12 @@ export class LektorSettingTab extends PluginSettingTab {
           this.host.presets.refresh();
         },
       },
-      () => this.display(),
+      () => this.redraw(),
     );
-
-    // Privacy
-    new Setting(containerEl).setName('Privacy').setHeading();
-
+  }
+  private renderPrivacy(containerEl: HTMLElement): void {
+    const store = this.host.settingsStore;
+    const s = store.settings;
     new Setting(containerEl)
       .setName('Store full transcripts')
       .setDesc(
@@ -394,7 +444,7 @@ export class LektorSettingTab extends PluginSettingTab {
     const result = this.host.settingsStore.update(patch);
     if (!result.ok) {
       new Notice(`Lektor: ${result.problems[0]?.message ?? 'that value is not allowed.'}`);
-      if (redisplayOnError) this.display();
+      if (redisplayOnError) this.redraw();
       return;
     }
     await this.save();
@@ -407,7 +457,7 @@ export class LektorSettingTab extends PluginSettingTab {
       return;
     }
     await this.apply({ models: { ollama: { ...this.host.settingsStore.settings.models.ollama, baseUrl: url } } });
-    this.display();
+    this.redraw();
     try {
       new Notice(`Lektor: ${await this.host.checkOllama()}`);
     } catch (err) {
@@ -424,7 +474,7 @@ export class LektorSettingTab extends PluginSettingTab {
     if (await this.save()) {
       this.host.contextSettingsChanged();
       new Notice('Lektor: excluded folders saved.');
-      this.display();
+      this.redraw();
     }
   }
 

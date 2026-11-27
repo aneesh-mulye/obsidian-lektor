@@ -41,7 +41,6 @@ export interface PresetSettingsHost {
 }
 
 export function renderPresetSettings(app: App, el: HTMLElement, host: PresetSettingsHost, redisplay: () => void): void {
-  new Setting(el).setName('Presets').setHeading();
   new Setting(el)
     .setDesc(
       `Presets are Markdown files in ${host.folder}: settings at the top, the prompt below. Edit them here, or in any text editor and then click Reload. ` +
@@ -96,7 +95,7 @@ export function renderPresetSettings(app: App, el: HTMLElement, host: PresetSett
       row.addButton((b) =>
         b
           .setButtonText('Delete')
-          .setWarning()
+          .setDestructive()
           .onClick(() => {
             void confirm(app, { title: `Delete ${name}?`, body: 'This deletes the preset file. It cannot be undone.', action: 'Delete' }).then(async (ok) => {
               if (ok) await host.presets.remove(entry.id);

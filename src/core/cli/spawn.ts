@@ -80,10 +80,10 @@ export const nodeSpawner: Spawner = {
       kill: () => {
         if (child.exitCode !== null || child.signalCode !== null) return;
         child.kill('SIGTERM');
-        const t = setTimeout(() => {
+        const t = window.setTimeout(() => {
           if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
         }, 3000);
-        void exit.then(() => clearTimeout(t));
+        void exit.then(() => window.clearTimeout(t));
       },
     };
   },

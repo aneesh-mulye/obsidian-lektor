@@ -70,7 +70,7 @@ export function renderEndpointSettings(app: App, el: HTMLElement, host: Endpoint
       .addButton((b) =>
         b
           .setButtonText('Remove')
-          .setWarning()
+          .setDestructive()
           .onClick(() => {
             void confirm(app, {
               title: `Remove ${e.name}?`,

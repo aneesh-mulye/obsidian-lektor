@@ -2,8 +2,8 @@
   "id": "lektor",
   "name": "Lektor",
   "version": "0.1.0",
-  "minAppVersion": "1.11.4",
-  "description": "Chat with local or CLI models about your notes. It sees only what you give it and changes nothing without your approval.",
+  "minAppVersion": "1.15.1",
+  "description": "Review your notes with an LLM that sees only what you share: proofread, flag hard-to-parse sentences and fact-check, with every edit approved hunk by hunk.",
   "author": "Aneesh Mulye",
   "isDesktopOnly": true
 }

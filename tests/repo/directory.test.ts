@@ -152,11 +152,31 @@ describe('The directory’s review rules (INVARIANTS.md U4)', () => {
     }
   });
 
-  it('U4: the README discloses network use, accounts and the absence of telemetry', () => {
+  it('U4: the README discloses network use, accounts, files outside the vault and the absence of telemetry, and credits', () => {
     expect(existsSync(join(ROOT, 'README.md'))).toBe(true);
     const readme = read('README.md');
-    for (const heading of ['## Network use', '## Accounts', '## Privacy']) expect(readme).toContain(heading);
+    const at = readme.indexOf('## Privacy and network use');
+    expect(at).toBeGreaterThan(-1);
+    // Near the top: the first section after the introduction.
+    expect(readme.slice(0, at).match(/^## /gm)).toBeNull();
+    for (const heading of ['### What the model sees and changes', '### Network use', '### Accounts', '### Files outside the vault']) expect(readme.slice(at)).toContain(heading);
     expect(readme).toMatch(/no telemetry/i);
+    for (const credit of ['LLM Hub', 'Smart Composer', 'AGPL-3.0-or-later']) expect(readme).toContain(credit);
     for (const img of readme.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) expect(existsSync(join(ROOT, img[1]!)), img[1]).toBe(true);
+  });
+
+  it('U4: a pushed tag builds a release only if it equals the manifest version, with the three plugin files', () => {
+    const wf = read('.github/workflows/release.yml');
+    expect(wf).toMatch(/on:\s+push:\s+tags:/);
+    expect(wf).toContain("require('./manifest.json').version");
+    expect(wf).toMatch(/\[ "\$tag" != "\$version" \]/);
+    expect(wf).toMatch(/gh release create "\$GITHUB_REF_NAME" main\.js manifest\.json styles\.css/);
+    expect(wf).toContain('npm run lint');
+    expect(wf).toContain('npm test');
+  });
+
+  it('U4: the review’s own ESLint rules are part of npm run lint', () => {
+    expect(read('eslint.config.mjs')).toContain('...obsidianmd.configs.recommended');
+    expect((JSON.parse(read('package.json')) as { devDependencies: Record<string, string> }).devDependencies['eslint-plugin-obsidianmd']).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });

@@ -43,7 +43,7 @@ const Schema = z
     attachments: z.array(z.string().min(1).max(500)).max(REQUEST_CAP).optional().describe('Attachments (images, text files) by vault path or file name.'),
     reason: z.string().max(500).optional().describe('One sentence for the user: why you need these.'),
   })
-  .refine((r) => r.notes?.length || r.linked_from || r.folder || r.search || r.attachments?.length, { message: 'Ask for at least one of notes, linked_from, folder, search or attachments.' });
+  .refine((r) => r.notes?.length || r.linked_from || r.folder || r.search || r.attachments?.length, { error: 'Ask for at least one of notes, linked_from, folder, search or attachments.' });
 
 export type RequestArgs = z.infer<typeof Schema>;
 

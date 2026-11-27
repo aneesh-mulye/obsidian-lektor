@@ -9,6 +9,43 @@ Two rules hold everywhere:
 
 ![Proofreading a note: findings highlighted in the note and listed in the chat](docs/images/proofread.png)
 
+## Privacy and network use
+
+### What the model sees and changes
+
+- The model sees only the context you attach: the chips above the message box. When it asks for more, you choose what to share, if anything.
+- Nothing in your vault changes until you accept a proposed change, hunk by hunk.
+
+### Network use
+
+Lektor itself connects only to:
+
+- **the model servers you set up**: Ollama or another local server, or any OpenAI- or Anthropic-compatible URL you enter, to send your messages and the context you attached;
+- **the web search provider you choose**, if any (Tavily, Exa, Brave, SearXNG or DuckDuckGo), only for searches the model makes;
+- **web pages the model fetches**, for example while fact-checking; pages that didn't come from a search, your messages or your notes need your approval first.
+
+When you turn on Claude Code or Codex, those programs contact Anthropic's or OpenAI's services themselves, as they do when you use them directly, including for their own web searches. While one of them is answering, Lektor listens on 127.0.0.1 (a random port, with a token for that reply) so the program can call Lektor's tools; nothing outside your computer can reach it.
+
+There is no telemetry and no analytics, no update checks, and no other network calls.
+
+### Accounts
+
+Core features work with a local model and no account.
+
+- **Claude Code** needs Claude Code installed and signed in with a Claude subscription; replies count against your plan.
+- **Codex** needs the Codex CLI installed and signed in with a ChatGPT plan; replies count against your plan.
+- **Tavily, Exa and Brave** search need an account and API key from that service; SearXNG needs a server address; DuckDuckGo needs neither.
+- **Endpoints** may need an API key, depending on the server.
+
+Keys are kept in Obsidian's secret storage, not in Lektor's settings file.
+
+### Files outside the vault
+
+- **Programs.** Lektor runs the `claude` and `codex` programs installed on your computer (from your PATH, or a path you set). That is why it works on desktop only.
+- **Temporary folders.** For each reply it creates a private folder in the system's temporary folder (`lektor-…`), with an empty working folder for the program, so the program never runs in your vault, plus the files that run needs: Lektor's fixed instructions, how to reach Lektor's tools, and for Codex its model list and any images you attached. The folder is removed when the reply ends. For Codex, one empty working folder serves the whole Obsidian session and is removed when Lektor unloads.
+- **Sign-in.** Each program signs in by itself, from its own files: Claude Code from its stored login, Codex from your `~/.codex`. Lektor never reads, copies or sends your sign-in or any token. For Codex, Lektor tells it to ignore its settings, MCP servers and other configuration there and to keep its state and logs in the temporary folder; Codex may still refresh its own list of models in `~/.codex`.
+- **Chats and settings** are kept in Lektor's own folder inside your vault's configuration folder. Chat history records which notes were sent (paths and hashes), not their contents, unless you turn on full transcripts; replies themselves are kept and may quote your notes. When you delete a note, Lektor offers to delete the chats that sent it.
+
 ## What it does
 
 - **Chat about your notes.** Add the current note, a selection, a folder or an attachment as context. Linked notes can come along to a depth you choose. Excluded folders (and Obsidian's own excluded files) are never sent.
@@ -39,31 +76,8 @@ Claude Code and Codex run locked down. Each runs in an empty temporary folder ou
 
 Every action is also in the command palette under "Lektor". None has a default hotkey; bind the ones you like in Settings → Hotkeys.
 
-## Network use
+## Licence and credits
 
-Lektor itself connects only to:
+AGPL-3.0-or-later; see [LICENSE](LICENSE). Bundled packages and their licences are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
 
-- the model servers you set up (Ollama, your endpoints);
-- the web search provider you choose, if any, and the pages it fetches for the model;
-- nothing else: no update checks, analytics or other services of its own.
-
-Claude Code and Codex, when you turn them on, contact Anthropic's and OpenAI's services themselves, as they do when you use them directly. They search the web through those services unless you hand web work to Lektor in settings.
-
-## Accounts
-
-- **Claude Code** needs Claude Code installed and signed in with a Claude subscription. Replies count against your plan.
-- **Codex** needs the Codex CLI installed and signed in with a ChatGPT plan. Replies count against your plan.
-- **Tavily, Exa and Brave** search need an API key from that service; SearXNG needs a server address; DuckDuckGo needs neither.
-- **Endpoints** may need an API key, depending on the server.
-
-Keys are kept in Obsidian's secret storage, not in Lektor's settings file.
-
-## Privacy
-
-- **No telemetry.** Lektor collects nothing about you or your use of it.
-- **Chats** are saved in Lektor's plugin folder with the list of notes that were sent (paths and hashes), not their contents, unless you turn on full transcripts. Replies themselves are kept, and may quote your notes; when you delete a note, Lektor offers to delete the chats that sent it.
-- **Outside your vault**, Lektor uses the system's temporary folder for Claude Code and Codex runs (removed afterwards) and starts those CLIs as programs. That is why Lektor works on desktop only.
-
-## Licence
-
-AGPL-3.0-or-later; see [LICENSE](LICENSE). Third-party code and packages are listed in [THIRD_PARTY.md](THIRD_PARTY.md).
+Lektor's design drew on two MIT-licensed Obsidian plugins: [LLM Hub](https://github.com/takeshy/obsidian-llm-hub) (running CLI models from Obsidian, and serving tools to them over MCP) and [Smart Composer](https://github.com/glowingjade/obsidian-smart-composer) (reviewing proposed edits block by block). Lektor contains no code from either.

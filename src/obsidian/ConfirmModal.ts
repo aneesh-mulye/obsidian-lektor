@@ -16,7 +16,7 @@ export function confirm(app: App, opts: { title: string; body: string; action: s
           .addButton((b) =>
             b
               .setButtonText(opts.action)
-              .setWarning()
+              .setDestructive()
               .onClick(() => {
                 answered = true;
                 this.close();

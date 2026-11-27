@@ -236,11 +236,13 @@ function DepthMenu(props: { chip: NoteChip; ui: ContextUi; window: number | null
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
     const esc = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    document.addEventListener('mousedown', away);
-    document.addEventListener('keydown', esc);
+    // The document this popover is in (the main window or a popout).
+    const doc = ref.current?.ownerDocument ?? activeDocument;
+    doc.addEventListener('mousedown', away);
+    doc.addEventListener('keydown', esc);
     return () => {
-      document.removeEventListener('mousedown', away);
-      document.removeEventListener('keydown', esc);
+      doc.removeEventListener('mousedown', away);
+      doc.removeEventListener('keydown', esc);
     };
   }, [onClose]);
 

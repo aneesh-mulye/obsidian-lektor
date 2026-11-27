@@ -187,7 +187,7 @@ export class CodexProvider implements ChatProvider {
     const p = this.deps.spawner.run(command, args, { cwd, env: { [TOKEN_ENV]: token } });
     const stop = () => p.kill();
     signal?.addEventListener('abort', stop, { once: true });
-    const timer = signal ? null : setTimeout(stop, this.deps.checkTimeoutMs ?? 5 * 60 * 1000);
+    const timer = signal ? null : window.setTimeout(stop, this.deps.checkTimeoutMs ?? 5 * 60 * 1000);
     try {
       p.write(prompt);
       p.end();
@@ -195,7 +195,7 @@ export class CodexProvider implements ChatProvider {
       for await (const l of p.lines) for (const e of stream.line(l)) onEvent?.(e);
       return { stream, exit: await p.exit, stderr: p.stderr() };
     } finally {
-      if (timer) clearTimeout(timer);
+      if (timer !== null) window.clearTimeout(timer);
       signal?.removeEventListener('abort', stop);
       p.kill();
     }

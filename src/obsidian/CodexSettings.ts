@@ -25,7 +25,6 @@ export function renderCodexSettings(app: App, el: HTMLElement, host: CodexSettin
   const cx = host.settings().cli.codex;
   const set = (patch: Partial<ReadonlySettings['cli']['codex']>) => host.apply({ cli: { codex: { ...host.settings().cli.codex, ...patch } } });
 
-  new Setting(el).setName('Codex').setHeading();
   const intro = new Setting(el).setName('Use Codex').setDesc(
     createFragment((f) => {
       f.appendText('Chat with OpenAI’s models through the Codex CLI installed on this computer, signed in with your own ChatGPT plan. ');

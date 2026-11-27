@@ -1200,7 +1200,9 @@ The aim here is a plugin that's easy to find your way around and ready for the c
   - the description is at most 250 characters, ends with a full stop, and doesn't mention Obsidian or say it is a plugin;
   - `versions.json` maps its version to its `minAppVersion`.
 - **Names:** no command or settings heading starts with the plugin's name, and no heading says "settings" or "options".
-- **The README** says what goes over the network, which accounts the CLI bridges need, and that there is no telemetry, as the directory's developer policies require.
+- **The README** opens with a "Privacy and network use" section: what the model sees and changes, network use, accounts and files outside the vault. It says there is no telemetry, and it credits LLM Hub and Smart Composer (docs/PUBLISHING.md).
+- **Releases:** a release workflow builds on a pushed tag only if the tag equals the manifest's version. It runs lint and the tests, then attaches `main.js`, `manifest.json` and `styles.css`.
+- **Linting:** Obsidian's own review rules (`eslint-plugin-obsidianmd`) are part of `npm run lint`.
 - **Counterexample means:** a review comment, or a policy breach, waiting to happen.
 
 ### Mutation testing (milestone 12)

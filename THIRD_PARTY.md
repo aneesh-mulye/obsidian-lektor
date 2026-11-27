@@ -1,6 +1,6 @@
 # Third-party code
 
-Lektor is licensed under AGPL-3.0-or-later (see `LICENSE`). It includes, or will include, code from the projects below under their own licences.
+Lektor is licensed under AGPL-3.0-or-later (see `LICENSE`). It bundles the npm packages below under their own licences.
 
 ## Lifted source modules
 
@@ -8,9 +8,9 @@ Files copied from other projects keep their original copyright notice in the fil
 
 | File in Lektor | Origin | Licence | Copyright |
 | --- | --- | --- | --- |
-| *(none yet)* | | | |
+| *(none)* | | | |
 
-Planned (DESIGN.md § Fork base): modules from [LLM Hub](https://github.com/takeshy/obsidian-llm-hub) (MIT) and [Smart Composer](https://github.com/glowingjade/obsidian-smart-composer) (MIT), from milestone 5 onwards.
+None was needed: DESIGN.md planned to lift modules from [LLM Hub](https://github.com/takeshy/obsidian-llm-hub) and [Smart Composer](https://github.com/glowingjade/obsidian-smart-composer) (both MIT), but Lektor's code was written for it. Checked on 2026-11-27 against both projects' current source (docs/publishing-audit.md): the only lines in common are generic ones, such as CSS declarations built on Obsidian's variables and the JSON shape the MCP specification requires. If code is ever copied from another project, it is listed here, keeps its notice and an SPDX `MIT` line, and needs its author's permission first (Obsidian's developer policies).
 
 ## Bundled npm packages
 

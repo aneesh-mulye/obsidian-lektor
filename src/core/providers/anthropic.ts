@@ -32,7 +32,7 @@ const ModelList = z.object({
       display_name: z.string().optional(),
       max_input_tokens: z.number().int().positive().optional(),
       max_tokens: z.number().int().positive().optional(),
-      capabilities: z.object({ image_input: z.object({ supported: z.boolean() }).optional() }).passthrough().optional(),
+      capabilities: z.object({ image_input: z.object({ supported: z.boolean() }).optional() }).loose().optional(),
     }),
   ),
   has_more: z.boolean().optional(),
@@ -50,22 +50,22 @@ const Usage = z
   .partial();
 
 const Event = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('message_start'), message: z.object({ usage: Usage.optional() }).passthrough() }),
+  z.object({ type: z.literal('message_start'), message: z.object({ usage: Usage.optional() }).loose() }),
   z.object({
     type: z.literal('content_block_start'),
     index: z.number().int().nonnegative(),
-    content_block: z.object({ type: z.string(), text: z.string().optional(), thinking: z.string().optional(), signature: z.string().optional(), data: z.string().optional(), id: z.string().optional(), name: z.string().optional(), input: z.unknown().optional() }).passthrough(),
+    content_block: z.object({ type: z.string(), text: z.string().optional(), thinking: z.string().optional(), signature: z.string().optional(), data: z.string().optional(), id: z.string().optional(), name: z.string().optional(), input: z.unknown().optional() }).loose(),
   }),
   z.object({
     type: z.literal('content_block_delta'),
     index: z.number().int().nonnegative(),
-    delta: z.object({ type: z.string(), text: z.string().optional(), thinking: z.string().optional(), signature: z.string().optional(), partial_json: z.string().optional() }).passthrough(),
+    delta: z.object({ type: z.string(), text: z.string().optional(), thinking: z.string().optional(), signature: z.string().optional(), partial_json: z.string().optional() }).loose(),
   }),
   z.object({ type: z.literal('content_block_stop'), index: z.number().int().nonnegative() }),
-  z.object({ type: z.literal('message_delta'), delta: z.object({ stop_reason: z.string().nullish() }).passthrough(), usage: Usage.nullish() }),
+  z.object({ type: z.literal('message_delta'), delta: z.object({ stop_reason: z.string().nullish() }).loose(), usage: Usage.nullish() }),
   z.object({ type: z.literal('message_stop') }),
   z.object({ type: z.literal('ping') }),
-  z.object({ type: z.literal('error'), error: z.object({ message: z.string().optional(), type: z.string().optional() }).passthrough().optional() }),
+  z.object({ type: z.literal('error'), error: z.object({ message: z.string().optional(), type: z.string().optional() }).loose().optional() }),
 ]);
 
 type Block = Record<string, unknown>;

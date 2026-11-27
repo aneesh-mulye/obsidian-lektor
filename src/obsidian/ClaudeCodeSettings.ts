@@ -25,7 +25,6 @@ export function renderClaudeCodeSettings(app: App, el: HTMLElement, host: Claude
   const cc = host.settings().cli.claudeCode;
   const set = (patch: Partial<ReadonlySettings['cli']['claudeCode']>) => host.apply({ cli: { claudeCode: { ...host.settings().cli.claudeCode, ...patch } } });
 
-  new Setting(el).setName('Claude Code').setHeading();
   const intro = new Setting(el).setName('Use Claude Code').setDesc(
     createFragment((f) => {
       f.appendText('Chat with Claude through the Claude Code CLI installed on this computer, signed in with your own Claude subscription. ');

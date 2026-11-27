@@ -304,7 +304,7 @@ export default class LektorPlugin extends Plugin {
         updateOffer();
       }),
     );
-    this.registerDomEvent(document, 'selectionchange', debounce(updateOffer, 150, true));
+    this.registerDomEvent(activeDocument, 'selectionchange', debounce(updateOffer, 150, true));
 
     const addSelection = async () => {
       const selection = await this.broker.selection();

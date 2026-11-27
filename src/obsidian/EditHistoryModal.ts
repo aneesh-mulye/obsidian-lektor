@@ -48,7 +48,7 @@ export class EditHistoryModal extends Modal {
     new Setting(el).addButton((b) =>
       b
         .setButtonText("Clear this note's AI history")
-        .setWarning()
+        .setDestructive()
         .onClick(() => {
           void confirm(this.app, {
             title: 'Clear AI edit history?',

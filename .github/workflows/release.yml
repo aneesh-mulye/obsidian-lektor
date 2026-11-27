@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 Aneesh Mulye
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+# Builds a release when a version tag is pushed (docs/PUBLISHING.md § Repository and release).
+# The tag must be exactly the version in manifest.json (x.y.z, no "v"). The release is created
+# as a draft with main.js, manifest.json and styles.css attached; publish it by hand after a look.
+name: Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Check the tag against manifest.json and versions.json
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version="$(node -p "require('./manifest.json').version")"
+          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$tag' is not a version like 1.2.3 (no 'v' prefix)."
+            exit 1
+          fi
+          if [ "$tag" != "$version" ]; then
+            echo "::error::Tag '$tag' does not match manifest.json version '$version'."
+            exit 1
+          fi
+          node -e "const m = require('./manifest.json'); const v = require('./versions.json'); if (v[m.version] !== m.minAppVersion) { console.error('versions.json must map ' + m.version + ' to ' + m.minAppVersion); process.exit(1); }"
+
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+
+      - name: Create a draft release with the plugin files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" main.js manifest.json styles.css --draft --title "$GITHUB_REF_NAME" --notes "Lektor $GITHUB_REF_NAME"
