@@ -104,7 +104,7 @@ None of these is protectable expression, and there are no shared files, function
 
 ## Needs the author
 
-1. **Decide on `fetch`** (see "Differences from the official pages"). Either keep streaming and answer the review if it flags `Http.ts`, or ask me to send model replies through `requestUrl` only, so a reply appears only when it's done.
+1. ~~Decide on `fetch`~~ **Decided 2026-11-27: keep streaming.** Run on its own, Obsidian's review config finds only this one *warning* (`no-restricted-globals` on `fetch` in `src/obsidian/Http.ts`) and no errors. Model replies stream through `fetch`, with `requestUrl` as the fallback; the developer policies don't forbid `fetch`. If a reviewer asks: *"Lektor streams chat replies from the user's own model server as they're generated, which `requestUrl` can't do. It falls back to `requestUrl` when a server refuses the app's origin. All other requests (web search, page fetches) use `requestUrl`."*
 2. **Push** the commits to `github.com/aneesh-mulye/obsidian-lektor`, make sure the repository is public, and check that Actions may create releases (Settings → Actions → General → Workflow permissions: "Read and write").
 3. **`minAppVersion`:** it is `1.15.1`, the only version tested. Lower it only if you test Lektor on an older Obsidian (1.13.0 is the floor, for the APIs it uses).
 4. **`authorUrl`:** optional; add one if you want a link on the directory page.
